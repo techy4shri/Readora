@@ -14,16 +14,25 @@ import 'pages/main_scaffold.dart';
 import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 import 'package:flutter/services.dart' show rootBundle;
+import 'package:readora/services/audio_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  
+  // Load environment variables
   await dotenv.load(fileName: ".env");
+  
+  // Initialize Firebase
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
   );
   
   // Ensure the service account file is available
   await ensureServiceAccountExists();
+  
+  // Initialize the AudioService
+  final audioService = AudioService();
+  await audioService.initialize();
   
   runApp(const MyApp());
 }
@@ -50,8 +59,47 @@ Future<void> ensureServiceAccountExists() async {
   }
 }
 
-class MyApp extends StatelessWidget {
+// Convert to StatefulWidget to handle app lifecycle
+class MyApp extends StatefulWidget {
   const MyApp({super.key});
+
+  @override
+  State<MyApp> createState() => _MyAppState();
+}
+
+class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
+  final AudioService _audioService = AudioService();
+
+  @override
+  void initState() {
+    super.initState();
+    // Add observer to track app lifecycle changes
+    WidgetsBinding.instance.addObserver(this);
+    // Start playing background music when app launches
+    _audioService.playBackgroundMusic();
+  }
+
+  @override
+  void dispose() {
+    // Clean up resources
+    _audioService.dispose();
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Handle app lifecycle changes
+    if (state == AppLifecycleState.paused || 
+        state == AppLifecycleState.inactive || 
+        state == AppLifecycleState.detached) {
+      // App is not in foreground - pause music
+      _audioService.pauseBackgroundMusic();
+    } else if (state == AppLifecycleState.resumed) {
+      // App is in foreground again - resume music
+      _audioService.playBackgroundMusic();
+    }
+  }
 
   @override
   Widget build(BuildContext context) {

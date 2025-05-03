@@ -8,17 +8,25 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:readora/services/custom_practice_service.dart';
 import 'package:readora/services/practice_stats_service.dart';
+import 'package:readora/services/audio_service.dart'; // Add this import
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:image_picker/image_picker.dart'; // Add this import
-import 'package:shared_preferences/shared_preferences.dart'; // Add this import
+import 'package:image_picker/image_picker.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
-// Drawing area for handwriting input
+// DrawingArea for handwriting input
 class DrawingArea {
   Offset point;
   Paint areaPaint;
 
   DrawingArea({required this.point, required this.areaPaint});
+}
+
+// Enum for feedback states
+enum FeedbackState {
+  correct,
+  wrong,
+  noText,
 }
 
 class PracticeScreen extends StatefulWidget {
@@ -37,6 +45,10 @@ class _PracticeScreenState extends State<PracticeScreen> {
   bool _isSubmitting = false;
   bool _isProcessingDrawing = false;
   String _recognizedText = '';
+  bool _showingFeedback = false;
+  
+  // Add audio service
+  final AudioService _audioService = AudioService();
   
   // Controllers for written responses
   final List<TextEditingController> _textControllers = [];
@@ -129,6 +141,11 @@ class _PracticeScreenState extends State<PracticeScreen> {
         final targetWord = widget.practice.content[_currentIndex].toLowerCase();
         if (_speechText.contains(targetWord)) {
           _itemStatus[_currentIndex] = true;
+          // Show feedback popup for correct answer
+          _showFeedbackPopup(FeedbackState.correct);
+        } else if (_speechText.isNotEmpty) {
+          // Show feedback popup for wrong answer
+          _showFeedbackPopup(FeedbackState.wrong);
         }
       }
     });
@@ -166,13 +183,20 @@ class _PracticeScreenState extends State<PracticeScreen> {
     setState(() {
       _itemStatus[_currentIndex] = isCorrect;
     });
+    
+    // Show feedback popup based on result
+    if (response.isEmpty) {
+      _showFeedbackPopup(FeedbackState.noText);
+    } else if (isCorrect) {
+      _showFeedbackPopup(FeedbackState.correct);
+    } else {
+      _showFeedbackPopup(FeedbackState.wrong);
+    }
   }
   
   Future<void> _processDrawing() async {
     if (points.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please draw something first')),
-      );
+      _showFeedbackPopup(FeedbackState.noText);
       return;
     }
     
@@ -304,12 +328,24 @@ class _PracticeScreenState extends State<PracticeScreen> {
           // Add a final debug statement
           debugPrint('Final status: ${_itemStatus[_currentIndex]}');
         });
+        
+        // Show feedback popup based on result
+        if (extracted.isEmpty) {
+          _showFeedbackPopup(FeedbackState.noText);
+        } else if (_itemStatus[_currentIndex]) {
+          _showFeedbackPopup(FeedbackState.correct);
+        } else {
+          _showFeedbackPopup(FeedbackState.wrong);
+        }
       }
     } catch (e) {
       debugPrint('Error in _processDrawing: ${e.toString()}');
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Error processing drawing: ${e.toString()}')),
       );
+      
+      // Show no text detected popup
+      _showFeedbackPopup(FeedbackState.noText);
     } finally {
       setState(() {
         _isProcessingDrawing = false;
@@ -320,10 +356,167 @@ class _PracticeScreenState extends State<PracticeScreen> {
           if (!_itemStatus[_currentIndex]) {
             _itemStatus[_currentIndex] = false;
           }
+          
+          // Show no text detected popup
+          _showFeedbackPopup(FeedbackState.noText);
         }
       });
     }
   }
+  
+  // Show feedback popup
+  void _showFeedbackPopup(FeedbackState state) {
+    // Don't show feedback if already showing another feedback
+    if (_showingFeedback) return;
+    
+    setState(() {
+      _showingFeedback = true;
+    });
+    
+    // Define content based on state
+    String gifAsset;
+    String heading;
+    String message;
+    Color headerColor;
+    
+    switch (state) {
+      case FeedbackState.correct:
+        gifAsset = 'assets/gifs/correct.gif';
+        heading = 'Great job!';
+        message = 'Your answer is correct. Keep up the good work!';
+        headerColor = Colors.green;
+        _audioService.playCorrectSound(); // Play correct sound
+        break;
+      case FeedbackState.wrong:
+        gifAsset = 'assets/gifs/wrong.gif';
+        heading = 'Oops!';
+        message = 'Your answer is incorrect. Keep practicing!';
+        headerColor = const Color.fromARGB(255, 194, 185, 18);
+        _audioService.playWrongSound(); // Play wrong sound
+        break;
+      case FeedbackState.noText:
+        gifAsset = 'assets/gifs/confused.gif';
+        heading = 'No Text Detected';
+        message = 'I couldn\'t read your answer. Please try again.';
+        headerColor = const Color.fromARGB(255, 114, 63, 151);
+        _audioService.playWrongSound(); // Play wrong sound for this too
+        break;
+    }
+    
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext context) {
+        return Dialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+          elevation: 0,
+          backgroundColor: Colors.transparent,
+          child: Container(
+            padding: const EdgeInsets.all(20),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(16),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.1),
+                  blurRadius: 10,
+                  offset: const Offset(0, 4),
+                ),
+              ],
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // Close button at the top right
+                Align(
+                  alignment: Alignment.topRight,
+                  child: GestureDetector(
+                    onTap: () {
+                      Navigator.of(context).pop();
+                      setState(() {
+                        _showingFeedback = false;
+                      });
+                    },
+                    child: const Icon(
+                      Icons.close,
+                      color: Colors.grey,
+                      size: 24,
+                    ),
+                  ),
+                ),
+
+                // GIF animation
+                SizedBox(
+                  height: 120,
+                  width: 120,
+                  child: Image.asset(
+                    gifAsset,
+                    fit: BoxFit.contain,
+                  ),
+                ),
+                const SizedBox(height: 16),
+
+                // Heading
+                Text(
+                  heading,
+                  style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                    color: headerColor,
+                  ),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 8),
+
+                // Message
+                Text(
+                  message,
+                  style: const TextStyle(
+                    fontSize: 16,
+                    color: Color(0xFF324259),
+                  ),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 20),
+
+                // Continue button
+                ElevatedButton(
+                  onPressed: () {
+                    Navigator.of(context).pop();
+                    setState(() {
+                      _showingFeedback = false;
+                    });
+                    
+                    // If answer is correct, move to next item automatically
+                    if (state == FeedbackState.correct && _itemStatus[_currentIndex]) {
+                      _nextItem();
+                    }
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: headerColor,
+                    padding: const EdgeInsets.symmetric(horizontal: 30, vertical: 12),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(24),
+                    ),
+                  ),
+                  child: Text(
+                    state == FeedbackState.correct ? 'Continue' : 'Try Again',
+                    style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  } 
   
   // Helper method for vowel sound comparison
   bool _compareVowelSounds(String extracted, String target) {
@@ -555,165 +748,268 @@ class _PracticeScreenState extends State<PracticeScreen> {
     }
   }
   
-  // Take photo for OCR - similar to ModuleDetails implementation
+  // Take photo for OCR
   Future<void> _takePhoto() async {
-  setState(() {
-    _isProcessingDrawing = true;
-    _recognizedText = '';
-    _itemStatus[_currentIndex] = false;
-  });
-  
-  try {
-    final XFile? photo = await _picker.pickImage(source: ImageSource.camera);
-    if (photo == null) {
-      setState(() {
-        _isProcessingDrawing = false;
-      });
-      return;
-    }
-    
-    _imageFile = File(photo.path);
-    final inputImage = InputImage.fromFilePath(photo.path);
-    final recognizedText = await textRecognizer.processImage(inputImage);
-    
-    final extractedText = recognizedText.text.trim();
-    
     setState(() {
-      _recognizedText = extractedText.isEmpty 
-          ? "No text detected in image" 
-          : extractedText;
-      
-      // Always set to false if empty text is detected
-      if (extractedText.isEmpty) {
-        _itemStatus[_currentIndex] = false;
-        _isProcessingDrawing = false;
-        return;
-      }
-      
-      // Check if the recognized text matches the current exercise
-      final currentContent = widget.practice.content[_currentIndex].toLowerCase();
-      final cleanRecognized = extractedText.toLowerCase()
-        .replaceAll(RegExp(r'[^\w\s]'), '')
-        .trim();
-      final cleanTarget = currentContent
-        .replaceAll(RegExp(r'[^\w\s]'), '')
-        .trim();
-        
-      // Extra check for empty text after cleaning
-      if (cleanRecognized.isEmpty) {
-        _itemStatus[_currentIndex] = false;
-        _isProcessingDrawing = false;
-        return;
-      }
-        
-      // For sentences, use more lenient comparison (75% match)
-      final targetWords = cleanTarget.split(' ');
-      final recognizedWords = cleanRecognized.split(' ');
-      
-      int matchedWords = 0;
-      for (final targetWord in targetWords) {
-        if (targetWord.isNotEmpty && 
-            recognizedWords.any((word) => word.contains(targetWord) || 
-            targetWord.contains(word))) {
-          matchedWords++;
-        }
-      }
-      
-      final matchPercentage = targetWords.isEmpty ? 
-          0 : (matchedWords / targetWords.length) * 100;
-      _itemStatus[_currentIndex] = matchPercentage >= 100;
-      _isProcessingDrawing = false;
-    });
-    
-  } catch (e) {
-    setState(() {
-      _recognizedText = 'Error: ${e.toString()}';
-      _isProcessingDrawing = false;
+      _isProcessingDrawing = true;
+      _recognizedText = '';
       _itemStatus[_currentIndex] = false;
     });
+    
+    try {
+      final XFile? photo = await _picker.pickImage(source: ImageSource.camera);
+      if (photo == null) {
+        setState(() {
+          _isProcessingDrawing = false;
+        });
+        return;
+      }
+      
+      _imageFile = File(photo.path);
+      final inputImage = InputImage.fromFilePath(photo.path);
+      final recognizedText = await textRecognizer.processImage(inputImage);
+      
+      final extractedText = recognizedText.text.trim();
+      
+      setState(() {
+        _recognizedText = extractedText.isEmpty 
+            ? "No text detected in image" 
+            : extractedText;
+        
+        // Always set to false if empty text is detected
+        if (extractedText.isEmpty) {
+          _itemStatus[_currentIndex] = false;
+          _isProcessingDrawing = false;
+          _showFeedbackPopup(FeedbackState.noText);
+          return;
+        }
+        
+        // Check if the recognized text matches the current exercise
+        final currentContent = widget.practice.content[_currentIndex].toLowerCase();
+        final cleanRecognized = extractedText.toLowerCase()
+          .replaceAll(RegExp(r'[^\w\s]'), '')
+          .trim();
+        final cleanTarget = currentContent
+          .replaceAll(RegExp(r'[^\w\s]'), '')
+          .trim();
+          
+        // Extra check for empty text after cleaning
+        if (cleanRecognized.isEmpty) {
+          _itemStatus[_currentIndex] = false;
+          _isProcessingDrawing = false;
+          _showFeedbackPopup(FeedbackState.noText);
+          return;
+        }
+          
+        // For sentences, use more lenient comparison (75% match)
+        final targetWords = cleanTarget.split(' ');
+        final recognizedWords = cleanRecognized.split(' ');
+        
+        int matchedWords = 0;
+        for (final targetWord in targetWords) {
+          if (targetWord.isNotEmpty && 
+              recognizedWords.any((word) => word.contains(targetWord) || 
+              targetWord.contains(word))) {
+            matchedWords++;
+          }
+        }
+        
+        final matchPercentage = targetWords.isEmpty ? 
+            0 : (matchedWords / targetWords.length) * 100;
+        _itemStatus[_currentIndex] = matchPercentage >= 100;
+        _isProcessingDrawing = false;
+        
+        // Show appropriate feedback
+        if (_itemStatus[_currentIndex]) {
+          _showFeedbackPopup(FeedbackState.correct);
+        } else {
+          _showFeedbackPopup(FeedbackState.wrong);
+        }
+      });
+      
+    } catch (e) {
+      setState(() {
+        _recognizedText = 'Error: ${e.toString()}';
+        _isProcessingDrawing = false;
+        _itemStatus[_currentIndex] = false;
+      });
+      
+      _showFeedbackPopup(FeedbackState.noText);
+    }
   }
-}
 
-  // New method for gallery image selection
+  // Pick image from gallery
   Future<void> _pickImage() async {
-  setState(() {
-    _isProcessingDrawing = true;
-    _recognizedText = '';
-    _itemStatus[_currentIndex] = false;
-  });
+    setState(() {
+      _isProcessingDrawing = true;
+      _recognizedText = '';
+      _itemStatus[_currentIndex] = false;
+    });
+    
+    try {
+      final XFile? photo = await _picker.pickImage(source: ImageSource.gallery);
+      if (photo == null) {
+        setState(() {
+          _isProcessingDrawing = false;
+        });
+        return;
+      }
+      
+      _imageFile = File(photo.path);
+      final inputImage = InputImage.fromFilePath(photo.path);
+      final recognizedText = await textRecognizer.processImage(inputImage);
+      
+      final extractedText = recognizedText.text.trim();
+      
+      setState(() {
+        _recognizedText = extractedText.isEmpty 
+            ? "No text detected in image" 
+            : extractedText;
+        
+        // Always set to false if empty text is detected
+        if (extractedText.isEmpty) {
+          _itemStatus[_currentIndex] = false;
+          _isProcessingDrawing = false;
+          _showFeedbackPopup(FeedbackState.noText);
+          return;
+        }
+        
+        // Check if the recognized text matches the current exercise
+        final currentContent = widget.practice.content[_currentIndex].toLowerCase();
+        final cleanRecognized = extractedText.toLowerCase()
+          .replaceAll(RegExp(r'[^\w\s]'), '')
+          .trim();
+        final cleanTarget = currentContent
+          .replaceAll(RegExp(r'[^\w\s]'), '')
+          .trim();
+        
+        // Extra check for empty text after cleaning
+        if (cleanRecognized.isEmpty) {
+          _itemStatus[_currentIndex] = false;
+          _isProcessingDrawing = false;
+          _showFeedbackPopup(FeedbackState.noText);
+          return;
+        }
+          
+        // For sentences, use more lenient comparison (75% match)
+        final targetWords = cleanTarget.split(' ');
+        final recognizedWords = cleanRecognized.split(' ');
+        
+        int matchedWords = 0;
+        for (final targetWord in targetWords) {
+          if (targetWord.isNotEmpty && 
+              recognizedWords.any((word) => word.contains(targetWord) || 
+              targetWord.contains(word))) {
+            matchedWords++;
+          }
+        }
+        
+        final matchPercentage = targetWords.isEmpty ? 
+            0 : (matchedWords / targetWords.length) * 100;
+        _itemStatus[_currentIndex] = matchPercentage >= 75;
+        _isProcessingDrawing = false;
+        
+        // Show appropriate feedback
+        if (_itemStatus[_currentIndex]) {
+          _showFeedbackPopup(FeedbackState.correct);
+        } else {
+          _showFeedbackPopup(FeedbackState.wrong);
+        }
+      });
+      
+    } catch (e) {
+      setState(() {
+        _recognizedText = 'Error: ${e.toString()}';
+        _isProcessingDrawing = false;
+        _itemStatus[_currentIndex] = false;
+      });
+      
+      _showFeedbackPopup(FeedbackState.noText);
+    }
+  }
   
-  try {
-    final XFile? photo = await _picker.pickImage(source: ImageSource.gallery);
-    if (photo == null) {
+  // Process image with OCR
+  Future<void> _processImageWithOCR(File imageFile) async {
+    try {
+      final inputImage = InputImage.fromFile(imageFile);
+      final recognizedText = await textRecognizer.processImage(inputImage);
+      
+      final extractedText = recognizedText.text.trim();
+      debugPrint('OCR extracted text: $extractedText');
+      
+      setState(() {
+        _recognizedText = extractedText.isEmpty 
+            ? "No text detected in image" 
+            : extractedText;
+        
+        // Set to false immediately if no text was detected
+        if (extractedText.isEmpty) {
+          _itemStatus[_currentIndex] = false;
+          _showFeedbackPopup(FeedbackState.noText);
+          return;
+        }
+        
+        // Check if the text matches the expected sentence
+        final target = widget.practice.content[_currentIndex].toLowerCase();
+        final extracted = extractedText.toLowerCase();
+        
+        // For sentences, use more lenient comparison
+        final cleanTarget = target.replaceAll(RegExp(r'[^\w\s]'), '').replaceAll(RegExp(r'\s+'), ' ').trim();
+        final cleanExtracted = extracted.replaceAll(RegExp(r'[^\w\s]'), '').replaceAll(RegExp(r'\s+'), ' ').trim();
+        
+        // Additional check for empty extracted text after cleaning
+        if (cleanExtracted.isEmpty) {
+          _itemStatus[_currentIndex] = false;
+          _showFeedbackPopup(FeedbackState.noText);
+          return;
+        }
+        
+        // Check if the extracted text contains at least 75% of the target words
+        final targetWords = cleanTarget.split(' ');
+        final extractedWords = cleanExtracted.split(' ');
+        
+        int matchedWords = 0;
+        for (final targetWord in targetWords) {
+          if (targetWord.isNotEmpty && extractedWords.any((word) => 
+              word.isNotEmpty && 
+              (word.contains(targetWord) || targetWord.contains(word)))) {
+            matchedWords++;
+          }
+        }
+        
+        final matchPercentage = targetWords.isEmpty ? 0 : (matchedWords / targetWords.length) * 100;
+        
+        // Debug the matching process
+        debugPrint('Target: $cleanTarget');
+        debugPrint('Extracted: $cleanExtracted');
+        debugPrint('Match percentage: $matchPercentage%');
+        
+        if (matchPercentage >= 75) {
+          _itemStatus[_currentIndex] = true;
+          _showFeedbackPopup(FeedbackState.correct);
+        } else {
+          _itemStatus[_currentIndex] = false;
+          _showFeedbackPopup(FeedbackState.wrong);
+        }
+      });
+    } catch (e) {
+      debugPrint('Error in OCR processing: ${e.toString()}');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error processing image: ${e.toString()}')),
+      );
+      // Make sure to set status to false on error
+      setState(() {
+        _itemStatus[_currentIndex] = false;
+      });
+      
+      _showFeedbackPopup(FeedbackState.noText);
+    } finally {
       setState(() {
         _isProcessingDrawing = false;
       });
-      return;
     }
-    
-    _imageFile = File(photo.path);
-    final inputImage = InputImage.fromFilePath(photo.path);
-    final recognizedText = await textRecognizer.processImage(inputImage);
-    
-    final extractedText = recognizedText.text.trim();
-    
-    setState(() {
-      _recognizedText = extractedText.isEmpty 
-          ? "No text detected in image" 
-          : extractedText;
-      
-      // Always set to false if empty text is detected
-      if (extractedText.isEmpty) {
-        _itemStatus[_currentIndex] = false;
-        _isProcessingDrawing = false;
-        return;
-      }
-      
-      // Check if the recognized text matches the current exercise
-      final currentContent = widget.practice.content[_currentIndex].toLowerCase();
-      final cleanRecognized = extractedText.toLowerCase()
-        .replaceAll(RegExp(r'[^\w\s]'), '')
-        .trim();
-      final cleanTarget = currentContent
-        .replaceAll(RegExp(r'[^\w\s]'), '')
-        .trim();
-      
-      // Extra check for empty text after cleaning
-      if (cleanRecognized.isEmpty) {
-        _itemStatus[_currentIndex] = false;
-        _isProcessingDrawing = false;
-        return;
-      }
-        
-      // For sentences, use more lenient comparison (75% match)
-      final targetWords = cleanTarget.split(' ');
-      final recognizedWords = cleanRecognized.split(' ');
-      
-      int matchedWords = 0;
-      for (final targetWord in targetWords) {
-        if (targetWord.isNotEmpty && 
-            recognizedWords.any((word) => word.contains(targetWord) || 
-            targetWord.contains(word))) {
-          matchedWords++;
-        }
-      }
-      
-      final matchPercentage = targetWords.isEmpty ? 
-          0 : (matchedWords / targetWords.length) * 100;
-      _itemStatus[_currentIndex] = matchPercentage >= 75;
-      _isProcessingDrawing = false;
-    });
-    
-  } catch (e) {
-    setState(() {
-      _recognizedText = 'Error: ${e.toString()}';
-      _isProcessingDrawing = false;
-      _itemStatus[_currentIndex] = false;
-    });
   }
-}
   
-  // OCR controls for sentence writing
   Widget _buildOCRControls() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -723,15 +1019,15 @@ class _PracticeScreenState extends State<PracticeScreen> {
           onPressed: _takePhoto,
           icon: const Icon(Icons.camera_alt,color: Colors.white, size:16),
           label: const Text('Take Photo',
-          style: TextStyle(fontSize: 14, color: Colors.white),
+            style: TextStyle(fontSize: 14, color: Colors.white),
           ),
           style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF1F5377),
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4), // Even smaller padding
-                  minimumSize: const Size(80, 28), // Fixed smaller size
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(4),
-                  ),
+            backgroundColor: const Color(0xFF1F5377),
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4), // Even smaller padding
+            minimumSize: const Size(80, 28), // Fixed smaller size
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(4),
+            ),
           ),
         ),
         
@@ -818,11 +1114,11 @@ class _PracticeScreenState extends State<PracticeScreen> {
       return Scaffold(
         appBar: AppBar(
           title: Text(widget.practice.title,
-          style: const TextStyle(
-            color: Color(0xFF324259),
-            fontWeight: FontWeight.bold,
+            style: const TextStyle(
+              color: Color(0xFF324259),
+              fontWeight: FontWeight.bold,
+            ),
           ),
-        ),
           backgroundColor: Colors.white,
           foregroundColor: const Color(0xFF324259),
           elevation: 0,
@@ -877,7 +1173,7 @@ class _PracticeScreenState extends State<PracticeScreen> {
     return Scaffold(
       appBar: AppBar(
         title: Text(widget.practice.title,
-        style: const TextStyle(
+          style: const TextStyle(
             color: Color(0xFF324259),
             fontWeight: FontWeight.bold,
           ),
@@ -1217,48 +1513,48 @@ class _PracticeScreenState extends State<PracticeScreen> {
           
           // Display recognized text with a smaller fixed height
           Container(
-  height: MediaQuery.of(context).size.height * 0.06,
-  width: double.infinity,
-  padding: const EdgeInsets.all(6),
-  decoration: BoxDecoration(
-    color: _recognizedText.isEmpty
-        ? Colors.grey.withOpacity(0.1)
-        : (_itemStatus[_currentIndex] ? Colors.green.withOpacity(0.1) : Colors.red.withOpacity(0.1)),
-    borderRadius: BorderRadius.circular(8),
-    border: Border.all(
-      color: _recognizedText.isEmpty
-          ? Colors.grey
-          : (_itemStatus[_currentIndex] ? Colors.green : Colors.red),
-    ),
-  ),
-  child: Column(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: [
-      const Text(
-        'Recognized:',
-        style: TextStyle(
-          fontSize: 11,
-          fontWeight: FontWeight.bold,
-        ),
-      ),
-      const SizedBox(height: 1),
-      Text(
-        // Here's the fix - show the recognized text even if empty
-        _recognizedText.isEmpty 
-            ? 'Draw and click "Analyze"' 
-            : _recognizedText,
-        style: TextStyle(
-          fontSize: 12,
-          color: _recognizedText.isEmpty
-              ? Colors.grey
-              : (_itemStatus[_currentIndex] ? Colors.green : Colors.red),
-        ),
-        maxLines: 1, // Reduced to 1 line since it's just a letter
-        overflow: TextOverflow.ellipsis,
-      ),
-    ],
-  ),
-),
+            height: MediaQuery.of(context).size.height * 0.06,
+            width: double.infinity,
+            padding: const EdgeInsets.all(6),
+            decoration: BoxDecoration(
+              color: _recognizedText.isEmpty
+                  ? Colors.grey.withOpacity(0.1)
+                  : (_itemStatus[_currentIndex] ? Colors.green.withOpacity(0.1) : Colors.red.withOpacity(0.1)),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(
+                color: _recognizedText.isEmpty
+                    ? Colors.grey
+                    : (_itemStatus[_currentIndex] ? Colors.green : Colors.red),
+              ),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Recognized:',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 1),
+                Text(
+                  // Here's the fix - show the recognized text even if empty
+                  _recognizedText.isEmpty 
+                      ? 'Draw and click "Analyze"' 
+                      : _recognizedText,
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: _recognizedText.isEmpty
+                        ? Colors.grey
+                        : (_itemStatus[_currentIndex] ? Colors.green : Colors.red),
+                  ),
+                  maxLines: 1, // Reduced to 1 line since it's just a letter
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
+            ),
+          ),
         ],
       ),
     );
@@ -1312,19 +1608,19 @@ class _PracticeScreenState extends State<PracticeScreen> {
           
           const SizedBox(height: 8),
           
-          // Camera button only - removed gallery button
+          // Camera button only
           ElevatedButton.icon(
             onPressed: () => _captureImage(ImageSource.camera),
             icon: const Icon(Icons.camera_alt, size: 16),
-            label: const Text('Take Photo', ),
+            label: const Text('Take Photo'),
             style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF1F5377),
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4), // Even smaller padding
-                  minimumSize: const Size(80, 28), // Fixed smaller size
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(4),
-                  ),
-                ),
+              backgroundColor: const Color(0xFF1F5377),
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              minimumSize: const Size(80, 28),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(4),
+              ),
+            ),
           ),
           
           const SizedBox(height: 8),
@@ -1425,84 +1721,10 @@ class _PracticeScreenState extends State<PracticeScreen> {
       setState(() {
         _isProcessingDrawing = false;
       });
+      
+      _showFeedbackPopup(FeedbackState.noText);
     }
   }
-  
-  // Add method to process image with OCR
-  Future<void> _processImageWithOCR(File imageFile) async {
-  try {
-    final inputImage = InputImage.fromFile(imageFile);
-    final recognizedText = await textRecognizer.processImage(inputImage);
-    
-    final extractedText = recognizedText.text.trim();
-    debugPrint('OCR extracted text: $extractedText');
-    
-    setState(() {
-      _recognizedText = extractedText.isEmpty 
-          ? "No text detected in image" 
-          : extractedText;
-      
-      // Set to false immediately if no text was detected
-      if (extractedText.isEmpty) {
-        _itemStatus[_currentIndex] = false;
-        return;
-      }
-      
-      // Check if the text matches the expected sentence
-      final target = widget.practice.content[_currentIndex].toLowerCase();
-      final extracted = extractedText.toLowerCase();
-      
-      // For sentences, use more lenient comparison
-      final cleanTarget = target.replaceAll(RegExp(r'[^\w\s]'), '').replaceAll(RegExp(r'\s+'), ' ').trim();
-      final cleanExtracted = extracted.replaceAll(RegExp(r'[^\w\s]'), '').replaceAll(RegExp(r'\s+'), ' ').trim();
-      
-      // Additional check for empty extracted text after cleaning
-      if (cleanExtracted.isEmpty) {
-        _itemStatus[_currentIndex] = false;
-        return;
-      }
-      
-      // Check if the extracted text contains at least 75% of the target words
-      final targetWords = cleanTarget.split(' ');
-      final extractedWords = cleanExtracted.split(' ');
-      
-      int matchedWords = 0;
-      for (final targetWord in targetWords) {
-        if (targetWord.isNotEmpty && extractedWords.any((word) => 
-            word.isNotEmpty && 
-            (word.contains(targetWord) || targetWord.contains(word)))) {
-          matchedWords++;
-        }
-      }
-      
-      final matchPercentage = targetWords.isEmpty ? 0 : (matchedWords / targetWords.length) * 100;
-      
-      // Debug the matching process
-      debugPrint('Target: $cleanTarget');
-      debugPrint('Extracted: $cleanExtracted');
-      debugPrint('Match percentage: $matchPercentage%');
-      
-      if (matchPercentage >= 75) {
-        _itemStatus[_currentIndex] = true;
-      } else {
-        _itemStatus[_currentIndex] = false;
-      }
-    });
-  } catch (e) {
-    debugPrint('Error in OCR processing: ${e.toString()}');
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Error processing image: ${e.toString()}')),
-    );
-    // Make sure to set status to false on error
-    setState(() {
-      _itemStatus[_currentIndex] = false;
-    });
-  } finally {
-    setState(() {
-      _isProcessingDrawing = false;
-    });
-  }
-}
   
   Widget _buildWrittenInput() {
     return Column(
