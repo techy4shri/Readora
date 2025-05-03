@@ -83,9 +83,9 @@ class _UserDetailsScreenState extends State<UserDetailsScreen> {
         'createdAt': FieldValue.serverTimestamp(),
       });
       
-      // Navigate to home screen
+      // Navigate to main scaffold instead of home
       if (!mounted) return;
-      Navigator.of(context).pushReplacementNamed('/home');
+      Navigator.of(context).pushReplacementNamed('/main');
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Error saving details: ${e.toString()}')),

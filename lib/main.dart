@@ -5,8 +5,15 @@ import 'pages/splash_screen.dart';
 import 'pages/auth_screen.dart';
 import 'pages/home_page.dart';
 import 'pages/user_details.dart';
+import 'pages/tests.dart';
+import 'pages/practice_modules.dart';
+import 'pages/dashboard.dart';
+import 'pages/user_settings.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'pages/main_scaffold.dart'; 
 
 void main() async {
+  await dotenv.load();
   WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
@@ -30,7 +37,7 @@ class MyApp extends StatelessWidget {
       routes: {
         '/': (context) => const SplashScreen(),
         '/auth': (context) => const AuthScreen(),
-        '/home': (context) => const MyHomePage(title: 'Readora Home'),
+        '/main': (context) => const MainScaffold(),
         '/user_details': (context) => const UserDetailsScreen(),
       },
     );

@@ -41,8 +41,8 @@ class _AuthScreenState extends State<AuthScreen> {
     if (!mounted) return;
     
     if (userDoc.exists) {
-      // User profile exists, go to home
-      Navigator.of(context).pushReplacementNamed('/home');
+      // User profile exists, go to main scaffold
+      Navigator.of(context).pushReplacementNamed('/main');
     } else {
       // New user, go to profile setup
       Navigator.of(context).pushReplacementNamed('/user_details');

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'dart:async';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 
 class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key});
@@ -13,17 +14,43 @@ class _SplashScreenState extends State<SplashScreen> {
   @override
   void initState() {
     super.initState();
-    // Set a timer to navigate to the appropriate screen after 3 seconds
-    Timer(const Duration(seconds: 3), () {
-      // Check if user is already signed in
-      if (FirebaseAuth.instance.currentUser != null) {
-        // User is signed in, go to home
-        Navigator.of(context).pushReplacementNamed('/home');
+    // Add a slight delay to allow the splash screen to be visible
+    Future.delayed(const Duration(seconds: 2), () {
+      _checkUserStatus();
+    });
+  }
+
+  Future<void> _checkUserStatus() async {
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      
+      if (user != null) {
+        // Check if user details are completed
+        final userDoc = await FirebaseFirestore.instance
+            .collection('users')
+            .doc(user.uid)
+            .get();
+        
+        if (!mounted) return;
+        
+        if (userDoc.exists && userDoc.data()?.containsKey('firstName') == true) {
+          // User has completed profile - navigate to MainScaffold
+          Navigator.of(context).pushReplacementNamed('/main');
+        } else {
+          // User needs to complete profile
+          Navigator.of(context).pushReplacementNamed('/user_details');
+        }
       } else {
-        // No user signed in, go to auth screen
+        // No logged-in user
         Navigator.of(context).pushReplacementNamed('/auth');
       }
-    });
+    } catch (e) {
+      print('Error in splash screen: $e');
+      // On error, go to auth screen
+      if (mounted) {
+        Navigator.of(context).pushReplacementNamed('/auth');
+      }
+    }
   }
 
   @override
