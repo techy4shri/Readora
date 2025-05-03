@@ -557,125 +557,161 @@ class _PracticeScreenState extends State<PracticeScreen> {
   
   // Take photo for OCR - similar to ModuleDetails implementation
   Future<void> _takePhoto() async {
-    setState(() {
-      _isProcessingDrawing = true;
-      _recognizedText = '';
-      _itemStatus[_currentIndex] = false;
-    });
+  setState(() {
+    _isProcessingDrawing = true;
+    _recognizedText = '';
+    _itemStatus[_currentIndex] = false;
+  });
+  
+  try {
+    final XFile? photo = await _picker.pickImage(source: ImageSource.camera);
+    if (photo == null) {
+      setState(() {
+        _isProcessingDrawing = false;
+      });
+      return;
+    }
     
-    try {
-      final XFile? photo = await _picker.pickImage(source: ImageSource.camera);
-      if (photo == null) {
-        setState(() {
-          _isProcessingDrawing = false;
-        });
+    _imageFile = File(photo.path);
+    final inputImage = InputImage.fromFilePath(photo.path);
+    final recognizedText = await textRecognizer.processImage(inputImage);
+    
+    final extractedText = recognizedText.text.trim();
+    
+    setState(() {
+      _recognizedText = extractedText.isEmpty 
+          ? "No text detected in image" 
+          : extractedText;
+      
+      // Always set to false if empty text is detected
+      if (extractedText.isEmpty) {
+        _itemStatus[_currentIndex] = false;
+        _isProcessingDrawing = false;
         return;
       }
       
-      _imageFile = File(photo.path);
-      final inputImage = InputImage.fromFilePath(photo.path);
-      final recognizedText = await textRecognizer.processImage(inputImage);
-      
-      setState(() {
-        _recognizedText = recognizedText.text;
+      // Check if the recognized text matches the current exercise
+      final currentContent = widget.practice.content[_currentIndex].toLowerCase();
+      final cleanRecognized = extractedText.toLowerCase()
+        .replaceAll(RegExp(r'[^\w\s]'), '')
+        .trim();
+      final cleanTarget = currentContent
+        .replaceAll(RegExp(r'[^\w\s]'), '')
+        .trim();
         
-        // Check if the recognized text matches the current exercise
-        final currentContent = widget.practice.content[_currentIndex].toLowerCase();
-        final cleanRecognized = _recognizedText.toLowerCase()
-          .replaceAll(RegExp(r'[^\w\s]'), '')
-          .trim();
-        final cleanTarget = currentContent
-          .replaceAll(RegExp(r'[^\w\s]'), '')
-          .trim();
-          
-        // For sentences, use more lenient comparison (75% match)
-        final targetWords = cleanTarget.split(' ');
-        final recognizedWords = cleanRecognized.split(' ');
-        
-        int matchedWords = 0;
-        for (final targetWord in targetWords) {
-          if (targetWord.isNotEmpty && 
-              recognizedWords.any((word) => word.contains(targetWord) || 
-              targetWord.contains(word))) {
-            matchedWords++;
-          }
-        }
-        
-        final matchPercentage = targetWords.isEmpty ? 
-            0 : (matchedWords / targetWords.length) * 100;
-        _itemStatus[_currentIndex] = matchPercentage >= 75;
-        _isProcessingDrawing = false;
-      });
-      
-    } catch (e) {
-      setState(() {
-        _recognizedText = 'Error: ${e.toString()}';
-        _isProcessingDrawing = false;
+      // Extra check for empty text after cleaning
+      if (cleanRecognized.isEmpty) {
         _itemStatus[_currentIndex] = false;
-      });
-    }
+        _isProcessingDrawing = false;
+        return;
+      }
+        
+      // For sentences, use more lenient comparison (75% match)
+      final targetWords = cleanTarget.split(' ');
+      final recognizedWords = cleanRecognized.split(' ');
+      
+      int matchedWords = 0;
+      for (final targetWord in targetWords) {
+        if (targetWord.isNotEmpty && 
+            recognizedWords.any((word) => word.contains(targetWord) || 
+            targetWord.contains(word))) {
+          matchedWords++;
+        }
+      }
+      
+      final matchPercentage = targetWords.isEmpty ? 
+          0 : (matchedWords / targetWords.length) * 100;
+      _itemStatus[_currentIndex] = matchPercentage >= 100;
+      _isProcessingDrawing = false;
+    });
+    
+  } catch (e) {
+    setState(() {
+      _recognizedText = 'Error: ${e.toString()}';
+      _isProcessingDrawing = false;
+      _itemStatus[_currentIndex] = false;
+    });
   }
+}
 
   // New method for gallery image selection
   Future<void> _pickImage() async {
-    setState(() {
-      _isProcessingDrawing = true;
-      _recognizedText = '';
-      _itemStatus[_currentIndex] = false;
-    });
+  setState(() {
+    _isProcessingDrawing = true;
+    _recognizedText = '';
+    _itemStatus[_currentIndex] = false;
+  });
+  
+  try {
+    final XFile? photo = await _picker.pickImage(source: ImageSource.gallery);
+    if (photo == null) {
+      setState(() {
+        _isProcessingDrawing = false;
+      });
+      return;
+    }
     
-    try {
-      final XFile? photo = await _picker.pickImage(source: ImageSource.gallery);
-      if (photo == null) {
-        setState(() {
-          _isProcessingDrawing = false;
-        });
+    _imageFile = File(photo.path);
+    final inputImage = InputImage.fromFilePath(photo.path);
+    final recognizedText = await textRecognizer.processImage(inputImage);
+    
+    final extractedText = recognizedText.text.trim();
+    
+    setState(() {
+      _recognizedText = extractedText.isEmpty 
+          ? "No text detected in image" 
+          : extractedText;
+      
+      // Always set to false if empty text is detected
+      if (extractedText.isEmpty) {
+        _itemStatus[_currentIndex] = false;
+        _isProcessingDrawing = false;
         return;
       }
       
-      _imageFile = File(photo.path);
-      final inputImage = InputImage.fromFilePath(photo.path);
-      final recognizedText = await textRecognizer.processImage(inputImage);
+      // Check if the recognized text matches the current exercise
+      final currentContent = widget.practice.content[_currentIndex].toLowerCase();
+      final cleanRecognized = extractedText.toLowerCase()
+        .replaceAll(RegExp(r'[^\w\s]'), '')
+        .trim();
+      final cleanTarget = currentContent
+        .replaceAll(RegExp(r'[^\w\s]'), '')
+        .trim();
       
-      setState(() {
-        _recognizedText = recognizedText.text;
-        
-        // Check if the recognized text matches the current exercise
-        final currentContent = widget.practice.content[_currentIndex].toLowerCase();
-        final cleanRecognized = _recognizedText.toLowerCase()
-          .replaceAll(RegExp(r'[^\w\s]'), '')
-          .trim();
-        final cleanTarget = currentContent
-          .replaceAll(RegExp(r'[^\w\s]'), '')
-          .trim();
-          
-        // For sentences, use more lenient comparison (75% match)
-        final targetWords = cleanTarget.split(' ');
-        final recognizedWords = cleanRecognized.split(' ');
-        
-        int matchedWords = 0;
-        for (final targetWord in targetWords) {
-          if (targetWord.isNotEmpty && 
-              recognizedWords.any((word) => word.contains(targetWord) || 
-              targetWord.contains(word))) {
-            matchedWords++;
-          }
-        }
-        
-        final matchPercentage = targetWords.isEmpty ? 
-            0 : (matchedWords / targetWords.length) * 100;
-        _itemStatus[_currentIndex] = matchPercentage >= 75;
-        _isProcessingDrawing = false;
-      });
-      
-    } catch (e) {
-      setState(() {
-        _recognizedText = 'Error: ${e.toString()}';
-        _isProcessingDrawing = false;
+      // Extra check for empty text after cleaning
+      if (cleanRecognized.isEmpty) {
         _itemStatus[_currentIndex] = false;
-      });
-    }
+        _isProcessingDrawing = false;
+        return;
+      }
+        
+      // For sentences, use more lenient comparison (75% match)
+      final targetWords = cleanTarget.split(' ');
+      final recognizedWords = cleanRecognized.split(' ');
+      
+      int matchedWords = 0;
+      for (final targetWord in targetWords) {
+        if (targetWord.isNotEmpty && 
+            recognizedWords.any((word) => word.contains(targetWord) || 
+            targetWord.contains(word))) {
+          matchedWords++;
+        }
+      }
+      
+      final matchPercentage = targetWords.isEmpty ? 
+          0 : (matchedWords / targetWords.length) * 100;
+      _itemStatus[_currentIndex] = matchPercentage >= 75;
+      _isProcessingDrawing = false;
+    });
+    
+  } catch (e) {
+    setState(() {
+      _recognizedText = 'Error: ${e.toString()}';
+      _isProcessingDrawing = false;
+      _itemStatus[_currentIndex] = false;
+    });
   }
+}
   
   // OCR controls for sentence writing
   Widget _buildOCRControls() {
@@ -760,7 +796,7 @@ class _PracticeScreenState extends State<PracticeScreen> {
                     ),
                     const SizedBox(width: 8),
                     Text(
-                      _itemStatus[_currentIndex] ? 'Correct!' : 'Try again',
+                      _itemStatus[_currentIndex] ? 'You got this one!' : 'Try again',
                       style: TextStyle(
                         fontWeight: FontWeight.bold,
                         color: _itemStatus[_currentIndex] ? Colors.green[700] : Colors.red[700],
@@ -1394,63 +1430,79 @@ class _PracticeScreenState extends State<PracticeScreen> {
   
   // Add method to process image with OCR
   Future<void> _processImageWithOCR(File imageFile) async {
-    try {
-      final inputImage = InputImage.fromFile(imageFile);
-      final recognizedText = await textRecognizer.processImage(inputImage);
+  try {
+    final inputImage = InputImage.fromFile(imageFile);
+    final recognizedText = await textRecognizer.processImage(inputImage);
+    
+    final extractedText = recognizedText.text.trim();
+    debugPrint('OCR extracted text: $extractedText');
+    
+    setState(() {
+      _recognizedText = extractedText.isEmpty 
+          ? "No text detected in image" 
+          : extractedText;
       
-      final extractedText = recognizedText.text.trim();
-      debugPrint('OCR extracted text: $extractedText');
+      // Set to false immediately if no text was detected
+      if (extractedText.isEmpty) {
+        _itemStatus[_currentIndex] = false;
+        return;
+      }
       
-      setState(() {
-        _recognizedText = extractedText.isEmpty 
-            ? "No text detected in image" 
-            : extractedText;
-        
-        // Check if the text matches the expected sentence
-        final target = widget.practice.content[_currentIndex].toLowerCase();
-        final extracted = extractedText.toLowerCase();
-        
-        // For sentences, use more lenient comparison
-        final cleanTarget = target.replaceAll(RegExp(r'[^\w\s]'), '').replaceAll(RegExp(r'\s+'), ' ').trim();
-        final cleanExtracted = extracted.replaceAll(RegExp(r'[^\w\s]'), '').replaceAll(RegExp(r'\s+'), ' ').trim();
-        
-        // Check if the extracted text contains at least 75% of the target words
-        final targetWords = cleanTarget.split(' ');
-        final extractedWords = cleanExtracted.split(' ');
-        
-        int matchedWords = 0;
-        for (final targetWord in targetWords) {
-          if (targetWord.isNotEmpty && extractedWords.any((word) => 
-              word.isNotEmpty && 
-              (word.contains(targetWord) || targetWord.contains(word)))) {
-            matchedWords++;
-          }
+      // Check if the text matches the expected sentence
+      final target = widget.practice.content[_currentIndex].toLowerCase();
+      final extracted = extractedText.toLowerCase();
+      
+      // For sentences, use more lenient comparison
+      final cleanTarget = target.replaceAll(RegExp(r'[^\w\s]'), '').replaceAll(RegExp(r'\s+'), ' ').trim();
+      final cleanExtracted = extracted.replaceAll(RegExp(r'[^\w\s]'), '').replaceAll(RegExp(r'\s+'), ' ').trim();
+      
+      // Additional check for empty extracted text after cleaning
+      if (cleanExtracted.isEmpty) {
+        _itemStatus[_currentIndex] = false;
+        return;
+      }
+      
+      // Check if the extracted text contains at least 75% of the target words
+      final targetWords = cleanTarget.split(' ');
+      final extractedWords = cleanExtracted.split(' ');
+      
+      int matchedWords = 0;
+      for (final targetWord in targetWords) {
+        if (targetWord.isNotEmpty && extractedWords.any((word) => 
+            word.isNotEmpty && 
+            (word.contains(targetWord) || targetWord.contains(word)))) {
+          matchedWords++;
         }
-        
-        final matchPercentage = targetWords.isEmpty ? 0 : (matchedWords / targetWords.length) * 100;
-        
-        // Debug the matching process
-        debugPrint('Target: $cleanTarget');
-        debugPrint('Extracted: $cleanExtracted');
-        debugPrint('Match percentage: $matchPercentage%');
-        
-        if (matchPercentage >= 75) {
-          _itemStatus[_currentIndex] = true;
-        } else {
-          _itemStatus[_currentIndex] = false;
-        }
-      });
-    } catch (e) {
-      debugPrint('Error in OCR processing: ${e.toString()}');
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error processing image: ${e.toString()}')),
-      );
-    } finally {
-      setState(() {
-        _isProcessingDrawing = false;
-      });
-    }
+      }
+      
+      final matchPercentage = targetWords.isEmpty ? 0 : (matchedWords / targetWords.length) * 100;
+      
+      // Debug the matching process
+      debugPrint('Target: $cleanTarget');
+      debugPrint('Extracted: $cleanExtracted');
+      debugPrint('Match percentage: $matchPercentage%');
+      
+      if (matchPercentage >= 75) {
+        _itemStatus[_currentIndex] = true;
+      } else {
+        _itemStatus[_currentIndex] = false;
+      }
+    });
+  } catch (e) {
+    debugPrint('Error in OCR processing: ${e.toString()}');
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Error processing image: ${e.toString()}')),
+    );
+    // Make sure to set status to false on error
+    setState(() {
+      _itemStatus[_currentIndex] = false;
+    });
+  } finally {
+    setState(() {
+      _isProcessingDrawing = false;
+    });
   }
+}
   
   Widget _buildWrittenInput() {
     return Column(

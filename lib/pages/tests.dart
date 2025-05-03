@@ -491,7 +491,7 @@ class _TestsPageState extends State<TestsPage> {
             ),
           ).then((_) => _loadTests()); // Refresh when returning
         },
-        backgroundColor: const Color(0xFF1F5377),
+        backgroundColor: const Color.fromARGB(255, 99, 169, 92),
         child: const Icon(Icons.add, color: Colors.white),
       ),
     );
@@ -503,7 +503,7 @@ class _TestsPageState extends State<TestsPage> {
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
           Image.asset(
-            'assets/images/empty_tests.png', // Create this placeholder image
+            'assets/images/no_tests.webp',
             width: 150,
             height: 150,
             fit: BoxFit.contain,
@@ -571,7 +571,7 @@ class _TestsPageState extends State<TestsPage> {
                 Container(
                   padding: const EdgeInsets.all(16),
                   decoration: const BoxDecoration(
-                    color: Color(0xFF1F5377),
+                    color: Color.fromARGB(255, 40, 88, 123),
                     borderRadius: BorderRadius.only(
                       topLeft: Radius.circular(12),
                       topRight: Radius.circular(12),

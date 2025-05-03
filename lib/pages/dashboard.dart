@@ -323,7 +323,7 @@ class _DashboardPageState extends State<DashboardPage> {
               height: 85,
               child: _userData?['avatarIndex'] != null
                   ? Image.asset(
-                      'assets/images/avatar${_userData!['avatarIndex'] + 1}.png',
+                      'assets/images/avatar${_userData!['avatarIndex'] + 1}.webp',
                       fit: BoxFit.cover,
                     )
                   : const Icon(Icons.person, size: 70), // Increased icon size too

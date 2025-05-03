@@ -61,6 +61,10 @@ class _SplashScreenState extends State<SplashScreen> {
     // Define customizable dimensions
     final double horizontalPadding = 60.0;
     final double imageWidth = screenWidth - (horizontalPadding * 2);
+    
+    // Progress indicator customization
+    final double progressSize = 60.0;
+    final Color progressColor = const Color.fromARGB(255, 169, 196, 219); // You can customize this color
 
     return Scaffold(
       backgroundColor: const Color(0xFFB9DBE4),
@@ -70,10 +74,23 @@ class _SplashScreenState extends State<SplashScreen> {
           vertical: 40.0,
         ),
         child: Center(
-          child: Image.asset(
-            'assets/images/lexi_splash.png',
-            width: imageWidth,
-            fit: BoxFit.contain,
+          child: Stack(
+            alignment: Alignment.center,
+            children: [
+              Image.asset(
+                'assets/images/lexi_splash.png',
+                width: imageWidth,
+                fit: BoxFit.contain,
+              ),
+              SizedBox(
+                width: progressSize,
+                height: progressSize,
+                child: CircularProgressIndicator(
+                  strokeWidth: 5.0,
+                  valueColor: AlwaysStoppedAnimation<Color>(progressColor),
+                ),
+              ),
+            ],
           ),
         ),
       ),

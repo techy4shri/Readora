@@ -34,8 +34,6 @@ dependencies:
   firebase_auth: ^5.5.1
   cloud_firestore: ^5.6.5
   google_sign_in: ^6.3.0
-  google_sign_in_android: ^6.2.0
-  google_generative_ai: ^0.4.6
   flutter_dotenv: ^5.2.1
   speech_to_text: ^7.0.0
   google_mlkit_text_recognition: ^0.15.0

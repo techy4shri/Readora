@@ -19,15 +19,15 @@ class _UserDetailsScreenState extends State<UserDetailsScreen> {
   
   // List of avatar images to choose from
   final List<String> _avatarImages = [
-    'assets/images/avatar1.png',
-    'assets/images/avatar2.png',
-    'assets/images/avatar3.png',
-    'assets/images/avatar4.png',
-    'assets/images/avatar5.png',
-    'assets/images/avatar6.png',
-    'assets/images/avatar7.png',
-    'assets/images/avatar8.png',
-    'assets/images/avatar9.png',
+    'assets/images/avatar1.webp',
+    'assets/images/avatar2.webp',
+    'assets/images/avatar3.webp',
+    'assets/images/avatar4.webp',
+    'assets/images/avatar5.webp',
+    'assets/images/avatar6.webp',
+    'assets/images/avatar7.webp',
+    'assets/images/avatar8.webp',
+    'assets/images/avatar9.webp',
   ];
   
   @override

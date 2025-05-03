@@ -21,15 +21,15 @@ class _UserSettingsScreenState extends State<UserSettingsScreen> {
   
   // List of avatar images to choose from
   final List<String> _avatarImages = [
-    'assets/images/avatar1.png',
-    'assets/images/avatar2.png',
-    'assets/images/avatar3.png',
-    'assets/images/avatar4.png',
-    'assets/images/avatar5.png',
-    'assets/images/avatar6.png',
-    'assets/images/avatar7.png',
-    'assets/images/avatar8.png',
-    'assets/images/avatar9.png',
+    'assets/images/avatar1.webp',
+    'assets/images/avatar2.webp',
+    'assets/images/avatar3.webp',
+    'assets/images/avatar4.webp',
+    'assets/images/avatar5.webp',
+    'assets/images/avatar6.webp',
+    'assets/images/avatar7.webp',
+    'assets/images/avatar8.webp',
+    'assets/images/avatar9.webp',
   ];
   
   @override
@@ -366,7 +366,7 @@ class _UserSettingsScreenState extends State<UserSettingsScreen> {
                         ElevatedButton(
                           onPressed: _isLoading ? null : _saveUserDetails,
                           style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFF324259),
+                            backgroundColor: const Color(0xFF1F5377),
                             padding: const EdgeInsets.symmetric(vertical: 16),
                             shape: RoundedRectangleBorder(
                               borderRadius: BorderRadius.circular(12),
@@ -429,7 +429,7 @@ class _UserSettingsScreenState extends State<UserSettingsScreen> {
                               width: 180,
                               height: 180,
                               child: Image.asset(
-                                'assets/images/lexi_floating.png',
+                                'assets/images/lexi_floating.webp',
                                 fit: BoxFit.contain,
                               ),
                             ),

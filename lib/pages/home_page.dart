@@ -295,8 +295,8 @@ class _HomePageState extends State<HomePage> {
                 ),
                 child: Image.asset(
                   hasPracticed 
-                      ? 'assets/images/lexi_content.jpeg'
-                      : 'assets/images/lexi_sad.jpeg',
+                      ? 'assets/images/lexi_content.webp'
+                      : 'assets/images/lexi_sad.webp',
                   fit: BoxFit.contain,
                 ),
               ),
@@ -852,7 +852,7 @@ class _HomePageState extends State<HomePage> {
                               borderRadius: BorderRadius.circular(20),
                               child: _userData?['avatarIndex'] != null
                                   ? Image.asset(
-                                      'assets/images/avatar${_userData!['avatarIndex'] + 1}.png',
+                                      'assets/images/avatar${_userData!['avatarIndex'] + 1}.webp',
                                       fit: BoxFit.cover,
                                     )
                                   : const Icon(Icons.person),

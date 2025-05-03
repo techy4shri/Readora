@@ -459,7 +459,7 @@ bool _validateVisualTrackingAnswerStrict(String exerciseContent, String userAnsw
   } 
   else if (exerciseContent.contains('Track left to right')) {
     // Arrow tracking exercise - require exact arrow match
-    return cleanUserAnswer == '←' || cleanUserAnswer == 'left arrow';
+    return cleanUserAnswer == '←' || cleanUserAnswer == 'left';
   }
   else if (exerciseContent.contains('Follow the pattern')) {
     // Letter pattern recognition - require exact match of expected letter
