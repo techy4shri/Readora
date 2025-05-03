@@ -1,8 +1,12 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:google_generative_ai/google_generative_ai.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:http/http.dart' as http;
+import 'package:googleapis_auth/auth_io.dart';
+import 'package:path_provider/path_provider.dart';
+import 'dart:io';
 import 'dart:convert';
+import 'dart:math';
 
 // Types of practices
 enum PracticeType {
@@ -22,6 +26,7 @@ class PracticeModule {
   final bool completed;
   final DateTime createdAt;
   final int difficulty; // 1-5 scale
+  List<ImageOption>? imageOptions;
 
   PracticeModule({
     required this.id,
@@ -31,6 +36,7 @@ class PracticeModule {
     this.completed = false,
     required this.createdAt,
     this.difficulty = 1,
+    this.imageOptions,
   });
 
   Map<String, dynamic> toMap() {
@@ -42,6 +48,7 @@ class PracticeModule {
       'completed': completed,
       'createdAt': createdAt,
       'difficulty': difficulty,
+      'imageOptions': imageOptions?.map((e) => e.toJson()).toList(),
     };
   }
 
@@ -57,6 +64,10 @@ class PracticeModule {
       completed: map['completed'] ?? false,
       createdAt: (map['createdAt'] as Timestamp).toDate(),
       difficulty: map['difficulty'] ?? 1,
+      imageOptions: map['imageOptions'] != null
+          ? List<ImageOption>.from(
+              map['imageOptions'].map((x) => ImageOption.fromJson(x)))
+          : null,
     );
   }
 
@@ -69,6 +80,7 @@ class PracticeModule {
     bool? completed,
     DateTime? createdAt,
     int? difficulty,
+    List<ImageOption>? imageOptions,
   }) {
     return PracticeModule(
       id: id ?? this.id,
@@ -78,13 +90,108 @@ class PracticeModule {
       completed: completed ?? this.completed,
       createdAt: createdAt ?? this.createdAt,
       difficulty: difficulty ?? this.difficulty,
+      imageOptions: imageOptions ?? this.imageOptions,
+    );
+  }
+}
+
+class ImageOption {
+  final String id;
+  final String imageUrl;
+  final String word;
+
+  ImageOption({
+    required this.id,
+    required this.imageUrl,
+    required this.word,
+  });
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'imageUrl': imageUrl,
+        'word': word,
+      };
+
+  factory ImageOption.fromJson(Map<String, dynamic> json) {
+    return ImageOption(
+      id: json['id'],
+      imageUrl: json['imageUrl'],
+      word: json['word'],
     );
   }
 }
 
 class CustomPracticeService {
-  static final _apiKey = dotenv.env['GEMINI_API_KEY'] ?? '';
-  static final _model = GenerativeModel(model: 'gemini-1.5-pro', apiKey: _apiKey);
+  static final _projectId = dotenv.env['VERTEX_PROJECT_ID'] ?? '';
+  static final _location = dotenv.env['VERTEX_LOCATION'] ?? 'us-central1';
+  static final _modelId = 'gemini-1.5-pro-001'; // Using full model name with version
+  static String? _accessToken;
+  static DateTime? _tokenExpiry;
+  
+  // Get service account credentials from a file
+  static Future<ServiceAccountCredentials> _getCredentials() async {
+    final directory = await getApplicationDocumentsDirectory();
+    final credentialsPath = '${directory.path}/service-account.json';
+    final file = File(credentialsPath);
+    
+    // Check if credentials file exists
+    if (!await file.exists()) {
+      throw Exception('Service account credentials file not found at: $credentialsPath');
+    }
+    
+    final jsonString = await file.readAsString();
+    final jsonMap = json.decode(jsonString);
+    return ServiceAccountCredentials.fromJson(jsonMap);
+  }
+
+  // Get OAuth2 access token
+  static Future<String> _getAccessToken() async {
+    // Check if we have a valid token already
+    if (_accessToken != null && _tokenExpiry != null && DateTime.now().isBefore(_tokenExpiry!)) {
+      print("DEBUG: Using cached access token");
+      return _accessToken!;
+    }
+    
+    try {
+      print("DEBUG: Getting fresh access token");
+      final credentials = await _getCredentials();
+      
+      // Define the scopes needed for Vertex AI
+      final scopes = ['https://www.googleapis.com/auth/cloud-platform'];
+      
+      // Get the HTTP client with OAuth2 credentials
+      final client = await clientViaServiceAccount(credentials, scopes);
+      
+      // Store the token and its expiry
+      _accessToken = client.credentials.accessToken.data;
+      _tokenExpiry = client.credentials.accessToken.expiry;
+      
+      print("DEBUG: Successfully obtained fresh access token, expires at: $_tokenExpiry");
+      return _accessToken!;
+    } catch (e) {
+      print("ERROR: Failed to get access token: $e");
+      throw Exception('Failed to authenticate with Vertex AI: $e');
+    }
+  }
+
+  // Method to get authentication headers with token
+  static Future<Map<String, String>> _getAuthHeaders() async {
+    final token = await _getAccessToken();
+    print("DEBUG: Got auth headers with token");
+    return {
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer $token',
+    };
+  }
+
+  // Get the Vertex AI endpoint for Gemini
+  static String get _endpoint {
+    print("DEBUG: Constructing endpoint with project=$_projectId, location=$_location, model=$_modelId");
+    // For Gemini models, use the generateContent endpoint
+    final endpoint = 'https://$_location-aiplatform.googleapis.com/v1/projects/$_projectId/locations/$_location/publishers/google/models/$_modelId:generateContent';
+    print("DEBUG: Endpoint: $endpoint");
+    return endpoint;
+  }
   
   // Fetch user's recent test results
   static Future<List<Map<String, dynamic>>> _fetchRecentTestResults() async {
@@ -137,7 +244,7 @@ class CustomPracticeService {
         'recommendations': recommendations.join('\n\n'),
       };
 
-      // Generate personalized practices using Gemini
+      // Generate personalized practices using Vertex AI
       return await _generatePracticesWithGemini(combinedAnalyses);
     } catch (e) {
       print('Error generating custom practices: $e');
@@ -145,11 +252,14 @@ class CustomPracticeService {
     }
   }
 
-  // Generate practices using Gemini API
+  // Generate practices using Vertex AI API
   static Future<List<PracticeModule>> _generatePracticesWithGemini(
       Map<String, String> analyses) async {
     try {
-      // Create the prompt for Gemini
+      // Create a unique generation ID for this request
+      final randomSeed = DateTime.now().millisecondsSinceEpoch;
+      
+      // Create the prompt for Vertex AI
       final prompt = '''
       # Dyslexia Practice Module Generation
 
@@ -190,27 +300,123 @@ class CustomPracticeService {
       - For vowelSounds: Include 5 words with challenging vowel sounds
 
       Keep content appropriate for age 7-12 reading level. Focus on specific patterns found in their test results.
+
+      Important: Generate different content each time, including ${DateTime.now().toIso8601String()} as a timestamp to ensure uniqueness.
+      Generation ID: $randomSeed
       ''';
 
-      final content = [Content.text(prompt)];
-      final response = await _model.generateContent(content);
-      final responseText = response.text ?? '';
+      // Get headers with OAuth token
+      final headers = await _getAuthHeaders();
+      
+      // Prepare request body for Gemini model in Vertex AI with randomness
+      final requestBody = jsonEncode({
+        "contents": [
+          {
+            "role": "user",
+            "parts": [
+              {
+                "text": prompt
+              }
+            ]
+          }
+        ],
+        "generationConfig": {
+          "temperature": 0.7, // Increase temperature for more variety
+          "maxOutputTokens": 1024,
+          "topK": 40,
+          "topP": 0.95
+        }
+      });
+      
+      print("DEBUG: Sending request to Vertex AI");
+      print("DEBUG: Full request body: $requestBody");
+      
+      final response = await http.post(
+        Uri.parse(_endpoint),
+        headers: headers,
+        body: requestBody,
+      );
+      
+      if (response.statusCode != 200) {
+        print("DEBUG: ⚠️ Error response: ${response.statusCode}");
+        print("DEBUG: ⚠️ Headers: ${response.headers}");
+        print("DEBUG: ⚠️ Full error body: ${response.body}");
+        throw Exception("API call failed with status code: ${response.statusCode}");
+      }
+      
+      final responseData = jsonDecode(response.body);
+      
+      // Extract text from Gemini response format in Vertex AI
+      String responseText = "";
+      if (responseData.containsKey('candidates') && 
+          responseData['candidates'] is List && 
+          responseData['candidates'].isNotEmpty) {
+        
+        print("DEBUG: Found candidates in response");
+        
+        var candidate = responseData['candidates'][0];
+        if (candidate.containsKey('content') && 
+            candidate['content'].containsKey('parts') && 
+            candidate['content']['parts'] is List && 
+            candidate['content']['parts'].isNotEmpty) {
+          
+          responseText = candidate['content']['parts'][0]['text'] ?? '';
+          print("DEBUG: Extracted text of length: ${responseText.length}");
+          print("DEBUG: First 100 chars: ${responseText.substring(0, min(100, responseText.length))}...");
+        } else {
+          print("DEBUG: ⚠️ Unexpected candidate format");
+          print("DEBUG: ⚠️ Candidate: $candidate");
+        }
+      } else {
+        print("DEBUG: ⚠️ No candidates found in response");
+        throw Exception('Invalid response format from Vertex AI');
+      }
 
-      // Extract JSON from the response
+      // Extract JSON from the response - improve the regex to be more robust
       final jsonRegex = RegExp(r'\[\s*\{.*?\}\s*\]', dotAll: true);
       final match = jsonRegex.firstMatch(responseText);
       
       if (match == null) {
-        throw Exception('Could not extract valid JSON from response');
+        print("DEBUG: ⚠️ No JSON found in response text");
+        print("DEBUG: ⚠️ Response text: $responseText");
+        
+        // Alternative approach - try to find JSON anywhere in the text
+        final anyJsonMatch = RegExp(r'\[.*\]', dotAll: true).firstMatch(responseText);
+        
+        if (anyJsonMatch != null) {
+          try {
+            final jsonString = anyJsonMatch.group(0);
+            print("DEBUG: Found alternative JSON: ${jsonString?.substring(0, min(100, jsonString?.length ?? 0))}...");
+            final List<dynamic> jsonData = json.decode(jsonString!);
+            
+            // Convert to PracticeModule objects
+            return _createPracticesFromJsonData(jsonData);
+          } catch (e) {
+            print("DEBUG: ⚠️ Failed to parse alternative JSON: $e");
+            throw Exception('Could not extract valid JSON from response');
+          }
+        } else {
+          throw Exception('Could not extract valid JSON from response');
+        }
       }
       
       final jsonString = match.group(0);
       final List<dynamic> jsonData = json.decode(jsonString!);
       
-      // Convert to PracticeModule objects
-      List<PracticeModule> practices = [];
-      
-      for (var item in jsonData) {
+      return _createPracticesFromJsonData(jsonData);
+    } catch (e) {
+      print('Error with Vertex AI API: $e');
+      return _createDefaultPractices();
+    }
+  }
+  
+  // Helper method to create practice modules from JSON data
+  static List<PracticeModule> _createPracticesFromJsonData(List<dynamic> jsonData) {
+    // Convert to PracticeModule objects
+    List<PracticeModule> practices = [];
+    
+    for (var item in jsonData) {
+      try {
         // Convert the "type" string to PracticeType enum
         final typeStr = item['type'] as String;
         final type = PracticeType.values.firstWhere(
@@ -218,7 +424,7 @@ class CustomPracticeService {
           orElse: () => PracticeType.letterWriting,
         );
         
-        practices.add(PracticeModule(
+        final practice = PracticeModule(
           id: 'practice_${DateTime.now().millisecondsSinceEpoch}_${practices.length}',
           title: item['title'],
           type: type,
@@ -226,15 +432,29 @@ class CustomPracticeService {
           completed: false,
           createdAt: DateTime.now(),
           difficulty: item['difficulty'] ?? 1,
-        ));
+        );
+
+        // When creating sentence writing exercises, add image options
+        if (practice.type == PracticeType.sentenceWriting) {
+          practice.imageOptions = [
+            ImageOption(
+              id: 'img1',
+              imageUrl: 'https://example.com/image1.jpg',
+              word: 'example',
+            ),
+            // Add more image options
+          ];
+        }
+
+        practices.add(practice);
+      } catch (e) {
+        print("DEBUG: Error creating practice module: $e");
+        // Continue to next item
       }
-      
-      // Ensure we have at most 5 practices
-      return practices.take(5).toList();
-    } catch (e) {
-      print('Error with Gemini API: $e');
-      return _createDefaultPractices();
     }
+    
+    // Ensure we have at most 5 practices
+    return practices.take(5).toList();
   }
 
   // Save practices to Firestore

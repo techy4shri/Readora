@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:google_generative_ai/google_generative_ai.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'package:speech_to_text/speech_recognition_result.dart';
@@ -9,16 +8,96 @@ import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart
 import 'package:image_picker/image_picker.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'dart:io';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
+import 'dart:math';
+// Add new imports for OAuth authentication
+import 'package:googleapis_auth/auth_io.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:flutter/services.dart' show rootBundle;
 
-// Enhanced Gemini API Service
-class GeminiService {
-  static final _apiKey = dotenv.env['GEMINI_API_KEY'] ?? '';
-  static final _model = GenerativeModel(model: 'gemini-1.5-pro', apiKey: _apiKey);
+// Vertex AI Service with OAuth2 authentication
+class VertexAIService {
+  static final _projectId = dotenv.env['VERTEX_PROJECT_ID'] ?? '';
+  static final _location = dotenv.env['VERTEX_LOCATION'] ?? 'us-central1';
+  static final _modelId = 'gemini-1.5-pro'; // Vertex AI model ID
+  static String? _accessToken;
+  static DateTime? _tokenExpiry;
+  
+  static String get _endpoint {
+    print("DEBUG: Constructing endpoint with project=$_projectId, location=$_location, model=$_modelId");
+    // For Gemini models, we need to use a different endpoint structure
+    final endpoint = 'https://$_location-aiplatform.googleapis.com/v1/projects/$_projectId/locations/$_location/publishers/google/models/$_modelId:generateContent';
+    print("DEBUG: Endpoint: $endpoint");
+    return endpoint;
+  }
+
+  // New method to get service account credentials from a file
+  static Future<ServiceAccountCredentials> _getCredentials() async {
+    final directory = await getApplicationDocumentsDirectory();
+    final credentialsPath = '${directory.path}/service-account.json';
+    final file = File(credentialsPath);
+    
+    // Check if credentials file exists
+    if (!await file.exists()) {
+      throw Exception('Service account credentials file not found at: $credentialsPath');
+    }
+    
+    final jsonString = await file.readAsString();
+    final jsonMap = json.decode(jsonString);
+    return ServiceAccountCredentials.fromJson(jsonMap);
+  }
+  
+  // Get OAuth2 access token
+  static Future<String> _getAccessToken() async {
+    // Check if we have a valid token already
+    if (_accessToken != null && _tokenExpiry != null && DateTime.now().isBefore(_tokenExpiry!)) {
+      print("DEBUG: Using cached access token");
+      return _accessToken!;
+    }
+    
+    try {
+      print("DEBUG: Getting fresh access token");
+      final credentials = await _getCredentials();
+      
+      // Define the scopes needed for Vertex AI
+      final scopes = ['https://www.googleapis.com/auth/cloud-platform'];
+      
+      // Get the HTTP client with OAuth2 credentials
+      final client = await clientViaServiceAccount(credentials, scopes);
+      
+      // Store the token and its expiry
+      _accessToken = client.credentials.accessToken.data;
+      _tokenExpiry = client.credentials.accessToken.expiry;
+      
+      print("DEBUG: Successfully obtained fresh access token, expires at: $_tokenExpiry");
+      return _accessToken!;
+    } catch (e) {
+      print("ERROR: Failed to get access token: $e");
+      throw Exception('Failed to authenticate with Vertex AI: $e');
+    }
+  }
+  
+  // Method to get authentication headers with token
+  static Future<Map<String, String>> _getAuthHeaders() async {
+    final token = await _getAccessToken();
+    return {
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer $token',
+    };
+  }
 
   static Future<String> generateSentence() async {
     try {
+      print("DEBUG: Starting generateSentence call");
+      
+      // Check if project ID is available
+      if (_projectId.isEmpty) {
+        print("ERROR: VERTEX_PROJECT_ID environment variable is empty");
+      }
+      
       // Enhanced prompt for generating test sentences that include common dyslexia challenge patterns
-      final content = [Content.text('''Generate a simple sentence for dyslexia testing using common words. 
+      final prompt = '''Generate a simple sentence for dyslexia testing using common words. 
       The sentence should:
       - Be 8-10 words in length
       - Include at least one word with similar-looking letters (like b/d, p/q, or m/n)
@@ -27,11 +106,78 @@ class GeminiService {
       - Be at a 3rd-4th grade reading level
       - Use natural, conversational language
       
-      Return only the sentence with no additional text or explanations.''')];
+      Return only the sentence with no additional text or explanations.''';
       
-      final response = await _model.generateContent(content);
-      return response.text ?? 'She seemed like an angel in her white dress.';
+      print("DEBUG: Preparing API request to Vertex AI");
+      
+      // Get authentication headers with OAuth token
+      final headers = await _getAuthHeaders();
+      print("DEBUG: Got auth headers with token");
+      
+      // Gemini models use a different request format
+      final requestBody = jsonEncode({
+        "contents": [
+          {
+            "role": "user",
+            "parts": [
+              {
+                "text": prompt
+              }
+            ]
+          }
+        ],
+        "generationConfig": {
+          "temperature": 0.2,
+          "maxOutputTokens": 256,
+          "topK": 40,
+          "topP": 0.95
+        }
+      });
+      
+      print("DEBUG: Request body: ${requestBody.substring(0, min(100, requestBody.length))}...");
+      
+      print("DEBUG: Sending request to Vertex AI");
+      final response = await http.post(
+        Uri.parse(_endpoint),
+        headers: headers,
+        body: requestBody,
+      );
+
+      print("DEBUG: Response status code: ${response.statusCode}");
+      print("DEBUG: Response headers: ${response.headers}");
+      print("DEBUG: Response body: ${response.body.substring(0, min(200, response.body.length))}...");
+
+      if (response.statusCode == 200) {
+        final Map<String, dynamic> data = jsonDecode(response.body);
+        print("DEBUG: Successfully decoded response JSON");
+        
+        // Extract text from Gemini response format
+        if (data.containsKey('candidates') && 
+            data['candidates'] is List && 
+            data['candidates'].isNotEmpty &&
+            data['candidates'][0].containsKey('content') &&
+            data['candidates'][0]['content'].containsKey('parts') &&
+            data['candidates'][0]['content']['parts'] is List &&
+            data['candidates'][0]['content']['parts'].isNotEmpty) {
+          
+          final text = data['candidates'][0]['content']['parts'][0]['text'];
+          print("DEBUG: Successfully extracted text from response: $text");
+          return text.toString().trim();
+        } else {
+          print("ERROR: Unexpected response format. Could not locate text in response.");
+          print("DEBUG: Full response: ${response.body}");
+        }
+      } else if (response.statusCode == 401) {
+        print("ERROR: Authentication failed. Service account may lack permissions or token expired.");
+      } else if (response.statusCode == 403) {
+        print("ERROR: Permission denied. Check if service account has proper permissions.");
+      } else {
+        print("ERROR: Unexpected response code: ${response.statusCode}");
+      }
+      
+      throw Exception("API call failed with status code: ${response.statusCode}");
     } catch (e) {
+      print("ERROR in generateSentence: $e");
       // Fallback sentences in case API call fails - improved with better test patterns
       final fallbackSentences = [
         'The boy quickly jumped over the puddle beside the dog.',
@@ -48,6 +194,8 @@ class GeminiService {
 
   static Future<Map<String, String>> analyzeTest(String original, String written, String spoken) async {
     try {
+      print("DEBUG: Starting analyzeTest call with original: '$original', written length: ${written.length}, spoken length: ${spoken.length}");
+      
       // Enhanced prompt with more specific instructions for detailed pattern analysis and improved formatting
       final prompt = '''
       # Dyslexia Assessment Analysis
@@ -114,23 +262,89 @@ class GeminiService {
       - [Secondary area to focus practice efforts]
       ''';
       
-      final content = [Content.text(prompt)];
-      final response = await _model.generateContent(content);
-      final responseText = response.text ?? '';
+      print("DEBUG: Preparing API request for analysis");
       
-      // Parse the formatted response with the new format
-      final headingMatch = RegExp(r'HEADING:(.*?)(?=WRITTEN_ANALYSIS:|$)', dotAll: true).firstMatch(responseText);
-      final writtenMatch = RegExp(r'WRITTEN_ANALYSIS:(.*?)(?=SPEECH_ANALYSIS:|$)', dotAll: true).firstMatch(responseText);
-      final speechMatch = RegExp(r'SPEECH_ANALYSIS:(.*?)(?=RECOMMENDATIONS:|$)', dotAll: true).firstMatch(responseText);
-      final recommendationsMatch = RegExp(r'RECOMMENDATIONS:(.*?)(?=$)', dotAll: true).firstMatch(responseText);
+      // Get authentication headers with OAuth token
+      final headers = await _getAuthHeaders();
+      print("DEBUG: Got auth headers for analysis request");
       
-      return {
-        'heading': headingMatch?.group(1)?.trim() ?? 'Letter-Sound Patterns',
-        'writtenAnalysis': writtenMatch?.group(1)?.trim() ?? 'The written sample shows some potential indicators of dyslexia that would benefit from further assessment.',
-        'speechAnalysis': speechMatch?.group(1)?.trim() ?? 'The speech sample indicates phonological processing patterns that may be consistent with dyslexic tendencies.',
-        'recommendations': recommendationsMatch?.group(1)?.trim() ?? 'Practice with letter reversals, work on phonological awareness, and continue regular reading practice.',
-      };
+      // Update request format to match Gemini's requirements
+      final requestBody = jsonEncode({
+        "contents": [
+          {
+            "role": "user",
+            "parts": [
+              {
+                "text": prompt
+              }
+            ]
+          }
+        ],
+        "generationConfig": {
+          "temperature": 0.2,
+          "maxOutputTokens": 1024,
+          "topK": 40,
+          "topP": 0.95
+        }
+      });
+      
+      print("DEBUG: Sending analysis request to Vertex AI");
+      final response = await http.post(
+        Uri.parse(_endpoint),
+        headers: headers,
+        body: requestBody,
+      );
+      
+      print("DEBUG: Analysis response status code: ${response.statusCode}");
+      if (response.statusCode != 200) {
+        print("DEBUG: Error response body: ${response.body}");
+      }
+      
+      if (response.statusCode == 200) {
+        final Map<String, dynamic> data = jsonDecode(response.body);
+        print("DEBUG: Successfully decoded analysis response JSON");
+        
+        // Extract text from Gemini response format
+        if (data.containsKey('candidates') && 
+            data['candidates'] is List && 
+            data['candidates'].isNotEmpty &&
+            data['candidates'][0].containsKey('content') &&
+            data['candidates'][0]['content'].containsKey('parts') &&
+            data['candidates'][0]['content']['parts'] is List &&
+            data['candidates'][0]['content']['parts'].isNotEmpty) {
+          
+          final responseText = data['candidates'][0]['content']['parts'][0]['text'];
+          print("DEBUG: Response content length: ${responseText.length}");
+          print("DEBUG: Response content preview: ${responseText.substring(0, min(100, responseText.length))}...");
+          
+          // Parse the formatted response with the new format
+          final headingMatch = RegExp(r'HEADING:(.*?)(?=WRITTEN_ANALYSIS:|$)', dotAll: true).firstMatch(responseText);
+          final writtenMatch = RegExp(r'WRITTEN_ANALYSIS:(.*?)(?=SPEECH_ANALYSIS:|$)', dotAll: true).firstMatch(responseText);
+          final speechMatch = RegExp(r'SPEECH_ANALYSIS:(.*?)(?=RECOMMENDATIONS:|$)', dotAll: true).firstMatch(responseText);
+          final recommendationsMatch = RegExp(r'RECOMMENDATIONS:(.*?)(?=$)', dotAll: true).firstMatch(responseText);
+          
+          print("DEBUG: Parsed heading? ${headingMatch != null}");
+          print("DEBUG: Parsed written analysis? ${writtenMatch != null}");
+          print("DEBUG: Parsed speech analysis? ${speechMatch != null}");
+          print("DEBUG: Parsed recommendations? ${recommendationsMatch != null}");
+          
+          return {
+            'heading': headingMatch?.group(1)?.trim() ?? 'Letter-Sound Patterns',
+            'writtenAnalysis': writtenMatch?.group(1)?.trim() ?? 'The written sample shows some potential indicators of dyslexia that would benefit from further assessment.',
+            'speechAnalysis': speechMatch?.group(1)?.trim() ?? 'The speech sample indicates phonological processing patterns that may be consistent with dyslexic tendencies.',
+            'recommendations': recommendationsMatch?.group(1)?.trim() ?? 'Practice with letter reversals, work on phonological awareness, and continue regular reading practice.',
+          };
+        } else {
+          print("ERROR: Unexpected analysis response format. Could not locate text in response.");
+          print("DEBUG: Full analysis response: ${response.body}");
+          throw Exception("Could not parse analysis response");
+        }
+      }
+      
+      // Fallback if API call fails or returns unexpected format
+      throw Exception('Error processing analysis via Vertex AI');
     } catch (e) {
+      print("ERROR in analyzeTest: $e");
       // Improved fallback analysis in case API call fails
       return {
         'heading': 'Letter Pattern Analysis',
@@ -161,6 +375,29 @@ The spoken response reveals consistent patterns in phonological processing. Thes
 - Syllable segmentation practice''',
       };
     }
+  }
+}
+
+// Add a new function to ensure the service account file exists
+Future<void> ensureServiceAccountExists() async {
+  try {
+    final directory = await getApplicationDocumentsDirectory();
+    final credentialsPath = '${directory.path}/service-account.json';
+    final file = File(credentialsPath);
+    
+    if (!await file.exists()) {
+      print("DEBUG: Service account file doesn't exist, copying from assets");
+      // Copy from assets
+      final byteData = await rootBundle.load('assets/service-account.json');
+      final buffer = byteData.buffer;
+      await file.writeAsBytes(
+          buffer.asUint8List(byteData.offsetInBytes, byteData.lengthInBytes));
+      print("DEBUG: Service account file copied successfully");
+    } else {
+      print("DEBUG: Service account file already exists");
+    }
+  } catch (e) {
+    print("ERROR: Failed to setup service account file: $e");
   }
 }
 
@@ -541,7 +778,7 @@ class _NewTestPageState extends State<NewTestPage> {
   void initState() {
     super.initState();
     _initSpeech();
-    _generateTestSentence();
+    _setupAndGenerateTest();
   }
 
   @override
@@ -557,19 +794,48 @@ class _NewTestPageState extends State<NewTestPage> {
     setState(() {});
   }
 
+  Future<void> _setupAndGenerateTest() async {
+    try {
+      // Ensure service account file is ready
+      await ensureServiceAccountExists();
+      // Generate the test sentence
+      await _generateTestSentence();
+    } catch (e) {
+      print("ERROR in setup: $e");
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error setting up test: ${e.toString()}')),
+      );
+      setState(() {
+        _isLoading = false;
+        _testSentence = 'She seemed like an angel in her white dress.';
+      });
+    }
+  }
+
   Future<void> _generateTestSentence() async {
     setState(() {
       _isLoading = true;
     });
     
     try {
-      // Get a sentence from Gemini with enhanced prompt
-      final sentence = await GeminiService.generateSentence();
+      print("DEBUG: Starting test sentence generation");
+      
+      // Check environment variables in main widget too
+      final apiKey = dotenv.env['VERTEX_API_KEY'];
+      final projectId = dotenv.env['VERTEX_PROJECT_ID'];
+      print("DEBUG from widget: VERTEX_API_KEY exists? ${apiKey != null && apiKey.isNotEmpty}");
+      print("DEBUG from widget: VERTEX_PROJECT_ID exists? ${projectId != null && projectId.isNotEmpty}");
+
+      // Get a sentence from Vertex AI with enhanced prompt
+      final sentence = await VertexAIService.generateSentence();
+      print("DEBUG: Received sentence: '$sentence'");
+      
       setState(() {
         _testSentence = sentence;
         _isLoading = false;
       });
     } catch (e) {
+      print("ERROR in _generateTestSentence: $e");
       // Fallback sentence if API fails
       setState(() {
         _testSentence = 'She seemed like an angel in her white dress.';
@@ -659,12 +925,19 @@ class _NewTestPageState extends State<NewTestPage> {
         throw Exception('No user signed in');
       }
 
-      // Get analysis from Gemini with the enhanced prompts
-      final analysis = await GeminiService.analyzeTest(
+      print("DEBUG: Starting test submission");
+      print("DEBUG: Original sentence: $_testSentence");
+      print("DEBUG: Written response length: ${_writtenTextController.text.length}");
+      print("DEBUG: Speech response length: ${_speechText.length}");
+
+      // Get analysis from Vertex AI with the enhanced prompts
+      final analysis = await VertexAIService.analyzeTest(
         _testSentence,
         _writtenTextController.text,
         _speechText,
       );
+      
+      print("DEBUG: Received analysis with heading: ${analysis['heading']}");
 
       // Save to Firestore with the new recommendations field
       await FirebaseFirestore.instance
@@ -682,6 +955,8 @@ class _NewTestPageState extends State<NewTestPage> {
         'timestamp': FieldValue.serverTimestamp(),
       });
 
+      print("DEBUG: Successfully saved test results to Firestore");
+
       // Show success and navigate back
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -695,6 +970,7 @@ class _NewTestPageState extends State<NewTestPage> {
         Navigator.pop(context);
       }
     } catch (e) {
+      print("ERROR in _submitTest: $e");
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Error saving test: ${e.toString()}')),
       );

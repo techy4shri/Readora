@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'home_page.dart';
 import 'tests.dart';
 import 'practice_modules.dart';
-// import 'dashboard.dart';
+import 'dashboard.dart';
 
 class MainScaffold extends StatefulWidget {
   const MainScaffold({super.key});
@@ -24,9 +24,8 @@ class _MainScaffoldState extends State<MainScaffold> {
     _pages = [
       const HomePage(),
       const TestsPage(),
-      // Replace placeholder with actual PracticeModulesScreen
       const PracticeModulesScreen(),
-      const Placeholder(color: Colors.orange), // Dashboard placeholder
+      const DashboardPage(),
     ];
   }
 

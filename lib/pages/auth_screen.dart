@@ -23,7 +23,60 @@ class _AuthScreenState extends State<AuthScreen> {
     super.dispose();
   }
 
+  // Helper method to convert errors to user-friendly messages
+  String _getReadableErrorMessage(dynamic error) {
+    // Check for empty fields first
+    if (_emailController.text.trim().isEmpty || _passwordController.text.trim().isEmpty) {
+      return 'Please enter both email and password';
+    }
+    
+    if (error is FirebaseAuthException) {
+      switch (error.code) {
+        case 'user-not-found':
+          return 'No account found with this email. Please sign up instead.';
+        case 'wrong-password':
+          return 'Incorrect password. Please try again';
+        case 'invalid-email':
+          return 'Please enter a valid email address';
+        case 'user-disabled':
+          return 'This account has been disabled';
+        case 'email-already-in-use':
+          return 'This email is already registered. Please sign in instead.';
+        case 'operation-not-allowed':
+          return 'Email/password accounts are not enabled';
+        case 'weak-password':
+          return 'Password is too weak. Please use at least 6 characters';
+        case 'network-request-failed':
+          return 'A network error occurred. Please check your connection and try again';
+        case 'too-many-requests':
+          return 'Access temporarily blocked due to many failed attempts. Please try again later';
+        case 'invalid-credential':
+          return 'The email or password is incorrect. Please try again';
+        default:
+          return 'Authentication error: ${error.code}. Please try again later';
+      }
+    } else if (error.toString().contains('socket')) {
+      return 'Network error. Please check your internet connection and try again';
+    } else if (error.toString().contains('timeout')) {
+      return 'Connection timeout. Please try again later';
+    }
+    
+    return 'An unexpected error occurred. Please try again later';
+  }
+
+  // Updated method with validation
   void _submitForm() {
+    // Check for empty fields before even trying to authenticate
+    if (_emailController.text.trim().isEmpty || _passwordController.text.trim().isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please enter both email and password'),
+          // Using default color instead of bright red
+        ),
+      );
+      return;
+    }
+    
     _signInWithEmailPassword();
   }
 
@@ -49,7 +102,7 @@ class _AuthScreenState extends State<AuthScreen> {
     }
   }
 
-  // Firebase Email/Password Authentication
+  // Updated Firebase Email/Password Authentication with better error handling
   Future<void> _signInWithEmailPassword() async {
     setState(() {
       _isLoading = true;
@@ -76,10 +129,16 @@ class _AuthScreenState extends State<AuthScreen> {
         Navigator.of(context).pushReplacementNamed('/user_details');
       }
     } catch (e) {
-      // Show error
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(e.toString())),
-      );
+      // Show user-friendly error message
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(_getReadableErrorMessage(e)),
+            // Using default color instead of bright red
+            duration: const Duration(seconds: 4),
+          ),
+        );
+      }
     } finally {
       if (mounted) {
         setState(() {
@@ -89,7 +148,7 @@ class _AuthScreenState extends State<AuthScreen> {
     }
   }
 
-  // Google Sign In
+  // Updated Google Sign In with better error handling
   Future<void> _signInWithGoogle() async {
     setState(() {
       _isLoading = true;
@@ -121,10 +180,27 @@ class _AuthScreenState extends State<AuthScreen> {
       // Check if profile exists and redirect
       await _checkUserProfileAndRedirect();
     } catch (e) {
-      // Show error
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to sign in with Google: ${e.toString()}')),
-      );
+      // Handle specific Google Sign In errors
+      String errorMessage;
+      
+      if (e.toString().contains('network')) {
+        errorMessage = 'A network error occurred. Please check your connection and try again.';
+      } else if (e.toString().contains('canceled')) {
+        errorMessage = 'Sign in was canceled';
+      } else if (e is FirebaseAuthException) {
+        errorMessage = _getReadableErrorMessage(e);
+      } else {
+        errorMessage = 'Failed to sign in with Google. Please try again later.';
+      }
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(errorMessage),
+            duration: const Duration(seconds: 4),
+          ),
+        );
+      }
     } finally {
       if (mounted) {
         setState(() {

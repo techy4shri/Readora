@@ -10,6 +10,8 @@ import 'package:readora/services/custom_practice_service.dart';
 import 'package:readora/services/practice_stats_service.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:image_picker/image_picker.dart'; // Add this import
+import 'package:shared_preferences/shared_preferences.dart'; // Add this import
 
 // Drawing area for handwriting input
 class DrawingArea {
@@ -50,6 +52,10 @@ class _PracticeScreenState extends State<PracticeScreen> {
   Color selectedColor = Colors.black;
   double strokeWidth = 5.0;
   final textRecognizer = TextRecognizer();
+  
+  // Add image picker
+  final ImagePicker _picker = ImagePicker();
+  File? _imageFile;
   
   @override
   void initState() {
@@ -245,10 +251,7 @@ class _PracticeScreenState extends State<PracticeScreen> {
             final firstCharTarget = target.isNotEmpty ? target[0] : '';
             
             // Check exact match or first character match
-            if (extracted == target || 
-                firstCharExtracted == firstCharTarget ||
-                extracted.contains(target) || 
-                target.contains(extracted)) {
+            if (extracted == target) {
               _itemStatus[_currentIndex] = true;
               debugPrint('Letter match found: ${_itemStatus[_currentIndex]}');
             }
@@ -288,9 +291,7 @@ class _PracticeScreenState extends State<PracticeScreen> {
             }
           } else if (widget.practice.type == PracticeType.vowelSounds) {
             // For vowel sounds, be a bit more lenient
-            if (extracted == target || 
-                extracted.contains(target) ||
-                _compareVowelSounds(extracted, target)) {
+            if (extracted == target) {
               _itemStatus[_currentIndex] = true;
             }
           } else {
@@ -402,6 +403,9 @@ class _PracticeScreenState extends State<PracticeScreen> {
         widget.practice.type.toString().split('.').last
       );
       
+      // Record practice completion in daily stats
+      await _recordPracticeCompletion();
+      
       setState(() {
         _isCompleted = true;
         _isSubmitting = false;
@@ -437,6 +441,103 @@ class _PracticeScreenState extends State<PracticeScreen> {
     }
   }
   
+  // Record daily practice completion in Firebase
+  Future<void> _recordPracticeCompletion() async {
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) return;
+      
+      // Get today's date in YYYY-MM-DD format
+      final now = DateTime.now();
+      final dateStr = "${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}";
+      
+      // Reference to the user's daily stats document
+      final dailyStatsRef = FirebaseFirestore.instance
+          .collection('userStats')
+          .doc('${user.uid}_$dateStr');
+      
+      // Get current stats document or create if it doesn't exist
+      final docSnapshot = await dailyStatsRef.get();
+      
+      final practiceId = widget.practice.id;
+      final practiceType = widget.practice.type.toString().split('.').last;
+      
+      if (docSnapshot.exists) {
+        // Check if this practice has already been recorded to avoid duplicates
+        final data = docSnapshot.data() as Map<String, dynamic>;
+        final practiceIds = List<String>.from(data['practiceIds'] ?? []);
+        
+        if (practiceIds.contains(practiceId)) {
+          print('Practice $practiceId already recorded for today, skipping');
+          return; // Skip if already recorded
+        }
+        
+        // Update existing document
+        await dailyStatsRef.update({
+          'completedPractices': FieldValue.increment(1),
+          'practiceIds': FieldValue.arrayUnion([practiceId]),
+          'practiceTypes': FieldValue.arrayUnion([practiceType]),
+          'lastUpdated': FieldValue.serverTimestamp(),
+        });
+
+        print('Updated existing stats document for $dateStr with practice $practiceId');
+      } else {
+        // Create new document with both module and practice fields
+        await dailyStatsRef.set({
+          'userId': user.uid,
+          'date': dateStr,
+          'completedModules': 0, // Initialize module count
+          'moduleIds': [], // Initialize module ids array
+          'completedPractices': 1, // First practice completion
+          'practiceIds': [practiceId],
+          'practiceTypes': [practiceType],
+          'timestamp': FieldValue.serverTimestamp(),
+        });
+
+        print('Created new stats document for $dateStr with practice $practiceId');
+      }
+
+      // Verify the data was saved correctly
+      final verificationDoc = await dailyStatsRef.get();
+      if (verificationDoc.exists) {
+        final data = verificationDoc.data() as Map<String, dynamic>;
+        final practiceIds = List<String>.from(data['practiceIds'] ?? []);
+        print('Verification: Document contains ${practiceIds.length} practices: $practiceIds');
+      } else {
+        print('ERROR: Failed to verify document - not found after save!');
+      }
+      
+      print('Practice completion recorded: $practiceId on $dateStr');
+      
+      // Also store locally to prevent duplicate counting
+      await _storeLocalPracticeCompletion(practiceId);
+      
+    } catch (e) {
+      print('Error recording practice completion: $e');
+      // Continue execution - this isn't a critical error that should block the user
+    }
+  }
+
+  // Store completed practice locally to prevent duplicate counting
+  Future<void> _storeLocalPracticeCompletion(String practiceId) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final now = DateTime.now();
+      final dateStr = "${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}";
+
+      // Get existing completed practices for today
+      final completedPractices = prefs.getStringList('completed_practices:$dateStr') ?? [];
+
+      if (!completedPractices.contains(practiceId)) {
+        completedPractices.add(practiceId);
+        await prefs.setStringList('completed_practices:$dateStr', completedPractices);
+        print('Stored practice $practiceId in local storage');
+      }
+    } catch (e) {
+      print('Error storing local practice completion: $e');
+    }
+  }
+  
   String _getInstructionText() {
     switch (widget.practice.type) {
       case PracticeType.letterWriting:
@@ -454,6 +555,226 @@ class _PracticeScreenState extends State<PracticeScreen> {
     }
   }
   
+  // Take photo for OCR - similar to ModuleDetails implementation
+  Future<void> _takePhoto() async {
+    setState(() {
+      _isProcessingDrawing = true;
+      _recognizedText = '';
+      _itemStatus[_currentIndex] = false;
+    });
+    
+    try {
+      final XFile? photo = await _picker.pickImage(source: ImageSource.camera);
+      if (photo == null) {
+        setState(() {
+          _isProcessingDrawing = false;
+        });
+        return;
+      }
+      
+      _imageFile = File(photo.path);
+      final inputImage = InputImage.fromFilePath(photo.path);
+      final recognizedText = await textRecognizer.processImage(inputImage);
+      
+      setState(() {
+        _recognizedText = recognizedText.text;
+        
+        // Check if the recognized text matches the current exercise
+        final currentContent = widget.practice.content[_currentIndex].toLowerCase();
+        final cleanRecognized = _recognizedText.toLowerCase()
+          .replaceAll(RegExp(r'[^\w\s]'), '')
+          .trim();
+        final cleanTarget = currentContent
+          .replaceAll(RegExp(r'[^\w\s]'), '')
+          .trim();
+          
+        // For sentences, use more lenient comparison (75% match)
+        final targetWords = cleanTarget.split(' ');
+        final recognizedWords = cleanRecognized.split(' ');
+        
+        int matchedWords = 0;
+        for (final targetWord in targetWords) {
+          if (targetWord.isNotEmpty && 
+              recognizedWords.any((word) => word.contains(targetWord) || 
+              targetWord.contains(word))) {
+            matchedWords++;
+          }
+        }
+        
+        final matchPercentage = targetWords.isEmpty ? 
+            0 : (matchedWords / targetWords.length) * 100;
+        _itemStatus[_currentIndex] = matchPercentage >= 75;
+        _isProcessingDrawing = false;
+      });
+      
+    } catch (e) {
+      setState(() {
+        _recognizedText = 'Error: ${e.toString()}';
+        _isProcessingDrawing = false;
+        _itemStatus[_currentIndex] = false;
+      });
+    }
+  }
+
+  // New method for gallery image selection
+  Future<void> _pickImage() async {
+    setState(() {
+      _isProcessingDrawing = true;
+      _recognizedText = '';
+      _itemStatus[_currentIndex] = false;
+    });
+    
+    try {
+      final XFile? photo = await _picker.pickImage(source: ImageSource.gallery);
+      if (photo == null) {
+        setState(() {
+          _isProcessingDrawing = false;
+        });
+        return;
+      }
+      
+      _imageFile = File(photo.path);
+      final inputImage = InputImage.fromFilePath(photo.path);
+      final recognizedText = await textRecognizer.processImage(inputImage);
+      
+      setState(() {
+        _recognizedText = recognizedText.text;
+        
+        // Check if the recognized text matches the current exercise
+        final currentContent = widget.practice.content[_currentIndex].toLowerCase();
+        final cleanRecognized = _recognizedText.toLowerCase()
+          .replaceAll(RegExp(r'[^\w\s]'), '')
+          .trim();
+        final cleanTarget = currentContent
+          .replaceAll(RegExp(r'[^\w\s]'), '')
+          .trim();
+          
+        // For sentences, use more lenient comparison (75% match)
+        final targetWords = cleanTarget.split(' ');
+        final recognizedWords = cleanRecognized.split(' ');
+        
+        int matchedWords = 0;
+        for (final targetWord in targetWords) {
+          if (targetWord.isNotEmpty && 
+              recognizedWords.any((word) => word.contains(targetWord) || 
+              targetWord.contains(word))) {
+            matchedWords++;
+          }
+        }
+        
+        final matchPercentage = targetWords.isEmpty ? 
+            0 : (matchedWords / targetWords.length) * 100;
+        _itemStatus[_currentIndex] = matchPercentage >= 75;
+        _isProcessingDrawing = false;
+      });
+      
+    } catch (e) {
+      setState(() {
+        _recognizedText = 'Error: ${e.toString()}';
+        _isProcessingDrawing = false;
+        _itemStatus[_currentIndex] = false;
+      });
+    }
+  }
+  
+  // OCR controls for sentence writing
+  Widget _buildOCRControls() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Camera button - removed gallery button and made camera button full width
+        ElevatedButton.icon(
+          onPressed: _takePhoto,
+          icon: const Icon(Icons.camera_alt,color: Colors.white, size:16),
+          label: const Text('Take Photo',
+          style: TextStyle(fontSize: 14, color: Colors.white),
+          ),
+          style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF1F5377),
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4), // Even smaller padding
+                  minimumSize: const Size(80, 28), // Fixed smaller size
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+          ),
+        ),
+        
+        const SizedBox(height: 16),
+        
+        // Show image preview if available
+        if (_imageFile != null)
+          Container(
+            height: 150,
+            width: double.infinity,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: Colors.grey),
+            ),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: Image.file(
+                _imageFile!,
+                fit: BoxFit.cover,
+              ),
+            ),
+          ),
+        
+        const SizedBox(height: 16),
+        
+        // Recognized text display (if available)
+        if (_recognizedText.isNotEmpty)
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: _itemStatus[_currentIndex] ? Colors.green.withOpacity(0.1) : Colors.red.withOpacity(0.1),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: _itemStatus[_currentIndex] ? Colors.green : Colors.red,
+              ),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Recognized Text:',
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  _recognizedText,
+                  style: TextStyle(
+                    fontSize: 16,
+                    color: _itemStatus[_currentIndex] ? Colors.green[700] : Colors.red[700],
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Icon(
+                      _itemStatus[_currentIndex] ? Icons.check_circle : Icons.cancel,
+                      color: _itemStatus[_currentIndex] ? Colors.green : Colors.red,
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      _itemStatus[_currentIndex] ? 'Correct!' : 'Try again',
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        color: _itemStatus[_currentIndex] ? Colors.green[700] : Colors.red[700],
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     // If already completed, show completed screen
@@ -594,10 +915,11 @@ class _PracticeScreenState extends State<PracticeScreen> {
                 // Input method based on practice type
                 if (widget.practice.type == PracticeType.phonetic)
                   _buildPhoneticInput()
+                else if (widget.practice.type == PracticeType.sentenceWriting)
+                  _buildOCRControls() // Use OCR controls for sentence writing
                 else if (widget.practice.type == PracticeType.letterWriting || 
                          widget.practice.type == PracticeType.vowelSounds ||
-                         widget.practice.type == PracticeType.letterReversal ||
-                         widget.practice.type == PracticeType.sentenceWriting) // Added sentenceWriting
+                         widget.practice.type == PracticeType.letterReversal)
                   _buildDrawingInput()
                 else
                   _buildWrittenInput(),
@@ -742,117 +1064,123 @@ class _PracticeScreenState extends State<PracticeScreen> {
   }
   
   Widget _buildDrawingInput() {
-  return Expanded(
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.center,
-      children: [
-        Container(
-          height: MediaQuery.of(context).size.height * 0.15, // Reduced from 0.18
-          width: double.infinity,
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(8), // Reduced from 12
-            boxShadow: [
-              BoxShadow(
-                color: Colors.grey.withOpacity(0.2), // Lighter shadow
-                spreadRadius: 1,
-                blurRadius: 2,
-                offset: const Offset(0, 1),
+    // If it's sentence writing, show camera options instead of drawing pad
+    if (widget.practice.type == PracticeType.sentenceWriting) {
+      return _buildImageCaptureInput();
+    }
+    
+    // Otherwise, keep the original drawing input
+    return Expanded(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          Container(
+            height: MediaQuery.of(context).size.height * 0.15, // Reduced from 0.18
+            width: double.infinity,
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(8), // Reduced from 12
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.grey.withOpacity(0.2), // Lighter shadow
+                  spreadRadius: 1,
+                  blurRadius: 2,
+                  offset: const Offset(0, 1),
+                ),
+              ],
+            ),
+            child: RepaintBoundary(
+              child: GestureDetector(
+                onPanDown: (details) {
+                  setState(() {
+                    points.add(
+                      DrawingArea(
+                        point: details.localPosition,
+                        areaPaint: Paint()
+                          ..color = selectedColor
+                          ..strokeWidth = strokeWidth
+                          ..strokeCap = StrokeCap.round
+                          ..isAntiAlias = true,
+                      ),
+                    );
+                  });
+                },
+                onPanUpdate: (details) {
+                  setState(() {
+                    points.add(
+                      DrawingArea(
+                        point: details.localPosition,
+                        areaPaint: Paint()
+                          ..color = selectedColor
+                          ..strokeWidth = strokeWidth
+                          ..strokeCap = StrokeCap.round
+                          ..isAntiAlias = true,
+                      ),
+                    );
+                  });
+                },
+                onPanEnd: (details) {
+                  setState(() {
+                    points.add(null);
+                  });
+                },
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(8), // Reduced from 12
+                  child: CustomPaint(
+                    painter: MyCustomPainter(points: points),
+                    size: Size.infinite,
+                  ),
+                ),
+              ),
+            ),
+          ),
+          
+          const SizedBox(height: 4), // Reduced from 8
+          
+          // Drawing controls - More compact buttons
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              ElevatedButton.icon(
+                onPressed: _clearDrawing,
+                icon: const Icon(Icons.clear, size: 14, color: Colors.white), // Smaller icon
+                label: const Text(
+                  'Clear', 
+                  style: TextStyle(fontSize: 12, color: Colors.white), // Smaller text
+                ),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.red,
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4), // Even smaller padding
+                  minimumSize: const Size(70, 28), // Fixed smaller size
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 12), // Reduced from 16
+              ElevatedButton.icon(
+                onPressed: _processDrawing,
+                icon: const Icon(Icons.check, size: 14, color: Colors.white), // Smaller icon
+                label: const Text(
+                  'Analyze', 
+                  style: TextStyle(fontSize: 12, color: Colors.white), // Smaller text
+                ),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF1F5377),
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4), // Even smaller padding
+                  minimumSize: const Size(80, 28), // Fixed smaller size
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                ),
               ),
             ],
           ),
-          child: RepaintBoundary(
-            child: GestureDetector(
-              onPanDown: (details) {
-                setState(() {
-                  points.add(
-                    DrawingArea(
-                      point: details.localPosition,
-                      areaPaint: Paint()
-                        ..color = selectedColor
-                        ..strokeWidth = strokeWidth
-                        ..strokeCap = StrokeCap.round
-                        ..isAntiAlias = true,
-                    ),
-                  );
-                });
-              },
-              onPanUpdate: (details) {
-                setState(() {
-                  points.add(
-                    DrawingArea(
-                      point: details.localPosition,
-                      areaPaint: Paint()
-                        ..color = selectedColor
-                        ..strokeWidth = strokeWidth
-                        ..strokeCap = StrokeCap.round
-                        ..isAntiAlias = true,
-                    ),
-                  );
-                });
-              },
-              onPanEnd: (details) {
-                setState(() {
-                  points.add(null);
-                });
-              },
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(8), // Reduced from 12
-                child: CustomPaint(
-                  painter: MyCustomPainter(points: points),
-                  size: Size.infinite,
-                ),
-              ),
-            ),
-          ),
-        ),
-        
-        const SizedBox(height: 4), // Reduced from 8
-        
-        // Drawing controls - More compact buttons
-        Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            ElevatedButton.icon(
-              onPressed: _clearDrawing,
-              icon: const Icon(Icons.clear, size: 14, color: Colors.white), // Smaller icon
-              label: const Text(
-                'Clear', 
-                style: TextStyle(fontSize: 12, color: Colors.white), // Smaller text
-              ),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.red,
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4), // Even smaller padding
-                minimumSize: const Size(70, 28), // Fixed smaller size
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(4),
-                ),
-              ),
-            ),
-            const SizedBox(width: 12), // Reduced from 16
-            ElevatedButton.icon(
-              onPressed: _processDrawing,
-              icon: const Icon(Icons.check, size: 14, color: Colors.white), // Smaller icon
-              label: const Text(
-                'Analyze', 
-                style: TextStyle(fontSize: 12, color: Colors.white), // Smaller text
-              ),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF1F5377),
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4), // Even smaller padding
-                minimumSize: const Size(80, 28), // Fixed smaller size
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(4),
-                ),
-              ),
-            ),
-          ],
-        ),
-        
-        const SizedBox(height: 4), // Reduced from 8
-        
-        // Display recognized text with a smaller fixed height
-        Container(
+          
+          const SizedBox(height: 4), // Reduced from 8
+          
+          // Display recognized text with a smaller fixed height
+          Container(
   height: MediaQuery.of(context).size.height * 0.06,
   width: double.infinity,
   padding: const EdgeInsets.all(6),
@@ -895,10 +1223,234 @@ class _PracticeScreenState extends State<PracticeScreen> {
     ],
   ),
 ),
-      ],
-    ),
-  );
-}
+        ],
+      ),
+    );
+  }
+  
+  // Add a new method for image capture interface
+  Widget _buildImageCaptureInput() {
+    return Expanded(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          // Show captured image or placeholder
+          Container(
+            height: MediaQuery.of(context).size.height * 0.25,
+            width: double.infinity,
+            decoration: BoxDecoration(
+              color: Colors.grey.withOpacity(0.1),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: Colors.grey.withOpacity(0.5)),
+            ),
+            child: _imageFile != null
+                ? ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: Image.file(
+                      _imageFile!,
+                      fit: BoxFit.cover,
+                    ),
+                  )
+                : Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: const [
+                        Icon(
+                          Icons.camera_alt_outlined,
+                          size: 40,
+                          color: Colors.grey,
+                        ),
+                        SizedBox(height: 8),
+                        Text(
+                          'Take a picture of your written sentence',
+                          style: TextStyle(
+                            color: Colors.grey,
+                            fontSize: 12,
+                          ),
+                          textAlign: TextAlign.center,
+                        ),
+                      ],
+                    ),
+                  ),
+          ),
+          
+          const SizedBox(height: 8),
+          
+          // Camera button only - removed gallery button
+          ElevatedButton.icon(
+            onPressed: () => _captureImage(ImageSource.camera),
+            icon: const Icon(Icons.camera_alt, size: 16),
+            label: const Text('Take Photo', ),
+            style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF1F5377),
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4), // Even smaller padding
+                  minimumSize: const Size(80, 28), // Fixed smaller size
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                ),
+          ),
+          
+          const SizedBox(height: 8),
+          
+          // Display recognized text with scrollable container for longer sentences
+          Expanded(
+            child: Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: _recognizedText.isEmpty
+                    ? Colors.grey.withOpacity(0.1)
+                    : (_itemStatus[_currentIndex] ? Colors.green.withOpacity(0.1) : Colors.red.withOpacity(0.1)),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                  color: _recognizedText.isEmpty
+                      ? Colors.grey
+                      : (_itemStatus[_currentIndex] ? Colors.green : Colors.red),
+                ),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      const Text(
+                        'Recognized Text:',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const Spacer(),
+                      if (_recognizedText.isNotEmpty)
+                        Icon(
+                          _itemStatus[_currentIndex] ? Icons.check_circle : Icons.error,
+                          color: _itemStatus[_currentIndex] ? Colors.green : Colors.red,
+                          size: 16,
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  Expanded(
+                    child: SingleChildScrollView(
+                      child: Text(
+                        _recognizedText.isEmpty
+                            ? 'Take a picture to scan text'
+                            : _recognizedText,
+                        style: TextStyle(
+                          fontSize: 14,
+                          color: _recognizedText.isEmpty
+                              ? Colors.grey
+                              : (_itemStatus[_currentIndex] ? Colors.green[800] : Colors.red[800]),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+  
+  // Add method to capture image
+  Future<void> _captureImage(ImageSource source) async {
+    try {
+      setState(() {
+        _isProcessingDrawing = true; // Reuse this flag for image processing
+      });
+      
+      final XFile? pickedFile = await _picker.pickImage(
+        source: source,
+        imageQuality: 80,
+      );
+      
+      if (pickedFile == null) {
+        setState(() {
+          _isProcessingDrawing = false;
+        });
+        return;
+      }
+      
+      final File imageFile = File(pickedFile.path);
+      setState(() {
+        _imageFile = imageFile;
+      });
+      
+      // Process the image with OCR
+      await _processImageWithOCR(imageFile);
+      
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error capturing image: ${e.toString()}')),
+      );
+      setState(() {
+        _isProcessingDrawing = false;
+      });
+    }
+  }
+  
+  // Add method to process image with OCR
+  Future<void> _processImageWithOCR(File imageFile) async {
+    try {
+      final inputImage = InputImage.fromFile(imageFile);
+      final recognizedText = await textRecognizer.processImage(inputImage);
+      
+      final extractedText = recognizedText.text.trim();
+      debugPrint('OCR extracted text: $extractedText');
+      
+      setState(() {
+        _recognizedText = extractedText.isEmpty 
+            ? "No text detected in image" 
+            : extractedText;
+        
+        // Check if the text matches the expected sentence
+        final target = widget.practice.content[_currentIndex].toLowerCase();
+        final extracted = extractedText.toLowerCase();
+        
+        // For sentences, use more lenient comparison
+        final cleanTarget = target.replaceAll(RegExp(r'[^\w\s]'), '').replaceAll(RegExp(r'\s+'), ' ').trim();
+        final cleanExtracted = extracted.replaceAll(RegExp(r'[^\w\s]'), '').replaceAll(RegExp(r'\s+'), ' ').trim();
+        
+        // Check if the extracted text contains at least 75% of the target words
+        final targetWords = cleanTarget.split(' ');
+        final extractedWords = cleanExtracted.split(' ');
+        
+        int matchedWords = 0;
+        for (final targetWord in targetWords) {
+          if (targetWord.isNotEmpty && extractedWords.any((word) => 
+              word.isNotEmpty && 
+              (word.contains(targetWord) || targetWord.contains(word)))) {
+            matchedWords++;
+          }
+        }
+        
+        final matchPercentage = targetWords.isEmpty ? 0 : (matchedWords / targetWords.length) * 100;
+        
+        // Debug the matching process
+        debugPrint('Target: $cleanTarget');
+        debugPrint('Extracted: $cleanExtracted');
+        debugPrint('Match percentage: $matchPercentage%');
+        
+        if (matchPercentage >= 75) {
+          _itemStatus[_currentIndex] = true;
+        } else {
+          _itemStatus[_currentIndex] = false;
+        }
+      });
+    } catch (e) {
+      debugPrint('Error in OCR processing: ${e.toString()}');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error processing image: ${e.toString()}')),
+      );
+    } finally {
+      setState(() {
+        _isProcessingDrawing = false;
+      });
+    }
+  }
   
   Widget _buildWrittenInput() {
     return Column(
