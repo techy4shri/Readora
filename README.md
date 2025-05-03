@@ -1,3 +1,3 @@
 # Readora
 
-## spcialized learning platform for neurodivergent children~
+## Specialized learning platform for neurodivergent children~
